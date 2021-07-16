@@ -39,7 +39,7 @@ endif()
 target_include_directories(tbbmalloc
     PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../include>
-    $<INSTALL_INTERFACE:include>)
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
 # TODO: fix warnings
 if (MSVC)
@@ -57,7 +57,10 @@ target_compile_options(tbbmalloc
     ${TBB_LIB_COMPILE_FLAGS}
     ${TBBMALLOC_LIB_COMPILE_FLAGS}
     ${TBB_COMMON_COMPILE_FLAGS}
+    ${TBB_IPO_COMPILE_FLAGS}
 )
+
+enable_language(C)
 
 # Avoid use of target_link_libraries here as it changes /DEF option to \DEF on Windows.
 set_target_properties(tbbmalloc PROPERTIES
@@ -66,7 +69,10 @@ set_target_properties(tbbmalloc PROPERTIES
     SOVERSION ${TBBMALLOC_BINARY_VERSION}
     LINK_FLAGS ${TBB_LINK_DEF_FILE_FLAG}${CMAKE_CURRENT_SOURCE_DIR}/def/${TBB_DEF_FILE_PREFIX}-tbbmalloc.def
     LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/def/${TBB_DEF_FILE_PREFIX}-tbbmalloc.def
+    LINKER_LANGUAGE C
 )
+
+set(CMAKE_CXX_IMPLICIT_LINK_LIBRARIES "")
 
 # Prefer using target_link_options instead of target_link_libraries to specify link options because
 # target_link_libraries may incorrectly handle some options (on Windows, for example).
@@ -75,12 +81,14 @@ if (COMMAND target_link_options)
         PRIVATE
         ${TBB_LIB_LINK_FLAGS}
         ${TBB_COMMON_LINK_FLAGS}
+        ${TBB_IPO_LINK_FLAGS}
     )
 else()
     target_link_libraries(tbbmalloc
         PRIVATE
         ${TBB_LIB_LINK_FLAGS}
         ${TBB_COMMON_LINK_FLAGS}
+        ${TBB_IPO_LINK_FLAGS}
     )
 endif()
 

@@ -206,6 +206,15 @@
     #define __TBB_USE_OPTIONAL_RTTI (__GXX_RTTI || __RTTI || __INTEL_RTTI__)
 #endif
 
+/** Address sanitizer detection **/
+#ifdef __SANITIZE_ADDRESS__
+    #define __TBB_USE_ADDRESS_SANITIZER 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+    #define __TBB_USE_ADDRESS_SANITIZER 1
+#endif
+#endif
+
 /** Library features presence macros **/
 
 #define __TBB_CPP14_INTEGER_SEQUENCE_PRESENT       (__TBB_LANG >= 201402L)
@@ -257,7 +266,7 @@
     #define __TBB_CPP20_COMPARISONS_PRESENT __TBB_CPP20_PRESENT
 #endif
 
-#define __TBB_RESUMABLE_TASKS                           (!__TBB_WIN8UI_SUPPORT && !__ANDROID__)
+#define __TBB_RESUMABLE_TASKS                           (!__TBB_WIN8UI_SUPPORT && !__ANDROID__ && !__QNXNTO__)
 
 /* This macro marks incomplete code or comments describing ideas which are considered for the future.
  * See also for plain comment with TODO and FIXME marks for small improvement opportunities.
@@ -287,6 +296,10 @@
 
 #if defined(__GNUC__) && !defined(__INTEL_COMPILER)
     #define __TBB_GCC_WARNING_IGNORED_ATTRIBUTES_PRESENT (__TBB_GCC_VERSION >= 60100)
+#endif
+
+#if __GNUC__ && !__INTEL_COMPILER && !__clang__
+    #define __TBB_GCC_PARAMETER_PACK_IN_LAMBDAS_BROKEN (__TBB_GCC_VERSION <= 40805)
 #endif
 
 #define __TBB_CPP17_FALLTHROUGH_PRESENT (__TBB_LANG >= 201703L)
@@ -371,7 +384,7 @@
 #endif
 
 #if !defined(__TBB_SURVIVE_THREAD_SWITCH) && \
-          (_WIN32 || _WIN64 || __APPLE__ || (__linux__ && !__ANDROID__))
+          (_WIN32 || _WIN64 || __APPLE__ || (__unix__ && !__ANDROID__))
     #define __TBB_SURVIVE_THREAD_SWITCH 1
 #endif /* __TBB_SURVIVE_THREAD_SWITCH */
 
@@ -391,7 +404,7 @@
 // instantiation site, which is too late for suppression of the corresponding messages for internal
 // stuff.
 #if !defined(__INTEL_COMPILER) && (!defined(TBB_SUPPRESS_DEPRECATED_MESSAGES) || (TBB_SUPPRESS_DEPRECATED_MESSAGES == 0))
-    #if (__TBB_LANG >= 201402L)
+    #if (__TBB_LANG >= 201402L && (!defined(_MSC_VER) || _MSC_VER >= 1920))
         #define __TBB_DEPRECATED [[deprecated]]
         #define __TBB_DEPRECATED_MSG(msg) [[deprecated(msg)]]
     #elif _MSC_VER
@@ -441,6 +454,10 @@
 #if __has_feature(thread_sanitizer)
     #define __TBB_USE_THREAD_SANITIZER 1
 #endif
+#endif
+
+#ifndef __TBB_RESUMABLE_TASKS_USE_THREADS
+#define __TBB_RESUMABLE_TASKS_USE_THREADS (__TBB_USE_THREAD_SANITIZER || __TBB_USE_ADDRESS_SANITIZER)
 #endif
 
 #ifndef __TBB_USE_CONSTRAINTS
@@ -506,6 +523,10 @@
 
 #if TBB_PREVIEW_TASK_GROUP_EXTENSIONS || __TBB_BUILD
 #define __TBB_PREVIEW_TASK_GROUP_EXTENSIONS 1
+#endif
+
+#if TBB_PREVIEW_COLLABORATIVE_CALL_ONCE || __TBB_BUILD
+#define __TBB_PREVIEW_COLLABORATIVE_CALL_ONCE 1
 #endif
 
 #endif // __TBB_detail__config_H

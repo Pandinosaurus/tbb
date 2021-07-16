@@ -202,6 +202,7 @@ void TestContinueNode() {
         if (icnt == 0) {
             // wait for node to count the message (or for the node body to execute, which would be wrong)
             utils::SpinWaitWhile([&] {
+                tbb::spin_mutex::scoped_lock l(cnode.my_mutex);
                 return serial_continue_state0 == 0 && cnode.my_current_count == 0;
             });
             CHECK_MESSAGE( (serial_continue_state0 == 0), "Improperly released continue_node");
@@ -261,19 +262,22 @@ void TestFunctionNode() {
 
     // rejecting
     serial_fn_state0 = 0;
-    tbb::flow::make_edge(fnode0, qnode1);
-    tbb::flow::make_edge(qnode0, fnode0);
-    INFO("Testing rejecting function_node:");
-    CHECK_MESSAGE( (!fnode0.my_queue), "node should have no queue");
-    CHECK_MESSAGE( (!fnode0.my_successors.empty()), "successor edge not added");
+    std::atomic<bool> rejected{ false };
     std::thread t([&] {
         g.reset(); // attach to the current arena
+        tbb::flow::make_edge(fnode0, qnode1);
+        tbb::flow::make_edge(qnode0, fnode0); // TODO: invesigate why it always creates a forwarding task
+        INFO("Testing rejecting function_node:");
+        CHECK_MESSAGE( (!fnode0.my_queue), "node should have no queue");
+        CHECK_MESSAGE( (!fnode0.my_successors.empty()), "successor edge not added");
         qnode0.try_put(1);
         qnode0.try_put(2);   // rejecting node should reject, reverse.
+        rejected = true;
         g.wait_for_all();
     });
     utils::SpinWaitWhileEq(serial_fn_state0, 0); // waiting rejecting node to start
-    utils::SpinWaitWhile([&] { return fnode0.my_predecessors.empty(); });
+    utils::SpinWaitWhileEq(rejected, false);
+    CHECK(fnode0.my_predecessors.empty() == false);
     serial_fn_state0 = 2;   // release function_node body.
     t.join();
     INFO(" reset");
@@ -302,20 +306,24 @@ void TestFunctionNode() {
     INFO("\n");
 
     serial_fn_state0 = 0;  // make the function_node wait
-    tbb::flow::make_edge(qnode0, fnode0);
-
+    rejected = false;
     std::thread t2([&] {
         g.reset(); // attach to the current arena
+
+        tbb::flow::make_edge(qnode0, fnode0); // TODO: invesigate why it always creates a forwarding task
+
         INFO(" start_func");
         qnode0.try_put(1);
         // now if we put an item to the queues the edges to the function_node will reverse.
         INFO(" put_node(2)");
         qnode0.try_put(2);   // start queue node.
+        rejected = true;
         g.wait_for_all();
     });
     utils::SpinWaitWhileEq(serial_fn_state0, 0); // waiting rejecting node to start
     // wait for the edges to reverse
-    utils::SpinWaitWhile([&] { return fnode0.my_predecessors.empty(); });
+    utils::SpinWaitWhileEq(rejected, false);
+    CHECK(fnode0.my_predecessors.empty() == false);
     g.my_context->cancel_group_execution();
     // release the function_node
     serial_fn_state0 = 2;
@@ -951,4 +959,3 @@ TEST_CASE("Bypass of a successor's message in a node with lightweight policy") {
     CHECK_MESSAGE((b.try_get(tmp) == true), "Functional nodes can work in succession");
     CHECK_MESSAGE((tmp == 1), "Value should not be altered");
 }
-

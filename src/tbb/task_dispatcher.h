@@ -83,7 +83,7 @@ inline d1::task* suspend_point_type::resume_task::execute(d1::execution_data& ed
         // If wait_ctx is null, it can be only a worker thread on outermost level because
         // coroutine_waiter interrupts bypass loop before the resume_task execution.
         ed_ext.task_disp->m_thread_data->set_post_resume_action(thread_data::post_resume_action::notify,
-            &ed_ext.task_disp->get_suspend_point()->m_is_owner_recalled);
+            ed_ext.task_disp->get_suspend_point());
     }
     // Do not access this task because it might be destroyed
     ed_ext.task_disp->resume(m_target);
@@ -299,8 +299,8 @@ d1::task* task_dispatcher::local_wait_for_all(d1::task* t, Waiter& waiter ) {
                 while (t != nullptr) {
                     assert_task_valid(t);
                     assert_pointer_valid</*alignment = */alignof(void*)>(ed.context);
-                    __TBB_ASSERT(ed.context->my_lifetime_state > d1::task_group_context::lifetime_state::locked &&
-                                 ed.context->my_lifetime_state < d1::task_group_context::lifetime_state::dying, nullptr);
+                    __TBB_ASSERT(ed.context->my_lifetime_state == d1::task_group_context::lifetime_state::bound ||
+                        ed.context->my_lifetime_state == d1::task_group_context::lifetime_state::isolated, nullptr);
                     __TBB_ASSERT(m_thread_data->my_inbox.is_idle_state(false), nullptr);
                     __TBB_ASSERT(task_accessor::is_resume_task(*t) || isolation == no_isolation || isolation == ed.isolation, nullptr);
                     // Check premature leave

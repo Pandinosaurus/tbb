@@ -14,11 +14,14 @@
     limitations under the License.
 */
 
+#include "common/config.h"
+
 #include "tbb/parallel_for.h"
 #include "tbb/global_control.h"
 
 #include "common/test.h"
 #include "common/utils.h"
+#include "common/utils_concurrency_limit.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -30,7 +33,9 @@
 
 // On Windows there is no real thread number limit beside available memory.
 // Therefore, the test for thread limit is unreasonable.
-#if TBB_USE_EXCEPTIONS && !_WIN32 && !__ANDROID__
+//
+// Under ASAN current approach is not viable as it breaks the ASAN itself as well
+#if TBB_USE_EXCEPTIONS && !_WIN32 && !__ANDROID__ && !__TBB_USE_ADDRESS_SANITIZER
 
 static bool g_exception_caught = false;
 static std::mutex m;
@@ -65,6 +70,10 @@ public:
 //! Test for exception when too many threads
 //! \brief \ref resource_usage
 TEST_CASE("Too many threads") {
+    if (utils::get_platform_max_threads() < 2) {
+        // The test expects that the scheduler will try to create at least one thread.
+        return;
+    }
     std::thread /* isolate test */ ([] {
         std::vector<Thread> threads;
         stop = false;
