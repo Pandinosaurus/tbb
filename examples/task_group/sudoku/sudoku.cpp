@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2025 Intel Corporation
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -19,12 +19,14 @@
 
 #include <string>
 #include <atomic>
+#include <sstream>
 
 #include "oneapi/tbb/tick_count.h"
 #include "oneapi/tbb/task_group.h"
 #include "oneapi/tbb/global_control.h"
 
 #include "common/utility/utility.hpp"
+#include "common/utility/measurements.hpp"
 #include "common/utility/get_default_num_threads.hpp"
 
 #pragma warning(disable : 4996)
@@ -39,7 +41,6 @@ unsigned short init_values[BOARD_SIZE] = { 1, 0, 0, 9, 0, 0, 0, 8, 0, 0, 8, 0, 2
                                            0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 7, 4, 0, 0, 7, 0, 0,
                                            0, 3, 0, 0, 3, 0, 0, 0, 2, 0, 0, 5, 0, 0, 0, 0, 0,
                                            0, 1, 0, 0, 5, 0, 0, 0, 1, 0, 0, 0, 0 };
-oneapi::tbb::task_group *g;
 double solve_time;
 
 typedef struct {
@@ -47,8 +48,8 @@ typedef struct {
     unsigned potential_set;
 } board_element;
 
-void read_board(const char *filename) {
-    FILE *fp;
+void read_board(const char* filename) {
+    FILE* fp;
     int input;
     fp = fopen(filename, "r");
     if (!fp) {
@@ -66,7 +67,7 @@ void read_board(const char *filename) {
     fclose(fp);
 }
 
-void print_board(board_element *b) {
+void print_board(const std::vector<board_element>& b) {
     for (unsigned row = 0; row < BOARD_DIM; ++row) {
         for (unsigned col = 0; col < BOARD_DIM; ++col) {
             printf(" %d", b[row * BOARD_DIM + col].solved_element);
@@ -79,7 +80,7 @@ void print_board(board_element *b) {
     }
 }
 
-void print_potential_board(board_element *b) {
+void print_potential_board(const std::vector<board_element>& b) {
     for (unsigned row = 0; row < BOARD_DIM; ++row) {
         for (unsigned col = 0; col < BOARD_DIM; ++col) {
             if (b[row * BOARD_DIM + col].solved_element)
@@ -95,50 +96,45 @@ void print_potential_board(board_element *b) {
     }
 }
 
-void init_board(board_element *b) {
+void init_board(std::vector<board_element>& b) {
     for (unsigned i = 0; i < BOARD_SIZE; ++i)
         b[i].solved_element = b[i].potential_set = 0;
 }
 
-void init_board(board_element *b, unsigned short arr[81]) {
+void init_board(std::vector<board_element>& b, unsigned short arr[BOARD_SIZE]) {
     for (unsigned i = 0; i < BOARD_SIZE; ++i) {
         b[i].solved_element = arr[i];
         b[i].potential_set = 0;
     }
 }
 
-void init_potentials(board_element *b) {
+void init_potentials(std::vector<board_element>& b) {
     for (unsigned i = 0; i < BOARD_SIZE; ++i)
         b[i].potential_set = 0;
 }
 
-void copy_board(board_element *src, board_element *dst) {
-    for (unsigned i = 0; i < BOARD_SIZE; ++i)
-        dst[i].solved_element = src[i].solved_element;
-}
-
-bool fixed_board(board_element *b) {
+bool fixed_board(const std::vector<board_element>& b) {
     for (int i = BOARD_SIZE - 1; i >= 0; --i)
         if (b[i].solved_element == 0)
             return false;
     return true;
 }
 
-bool in_row(board_element *b, unsigned row, unsigned col, unsigned short p) {
+bool in_row(const std::vector<board_element>& b, unsigned row, unsigned col, unsigned short p) {
     for (unsigned c = 0; c < BOARD_DIM; ++c)
         if (c != col && b[row * BOARD_DIM + c].solved_element == p)
             return true;
     return false;
 }
 
-bool in_col(board_element *b, unsigned row, unsigned col, unsigned short p) {
+bool in_col(const std::vector<board_element>& b, unsigned row, unsigned col, unsigned short p) {
     for (unsigned r = 0; r < BOARD_DIM; ++r)
         if (r != row && b[r * BOARD_DIM + col].solved_element == p)
             return true;
     return false;
 }
 
-bool in_block(board_element *b, unsigned row, unsigned col, unsigned short p) {
+bool in_block(const std::vector<board_element>& b, unsigned row, unsigned col, unsigned short p) {
     unsigned b_row = row / 3 * 3, b_col = col / 3 * 3;
     for (unsigned i = b_row; i < b_row + 3; ++i)
         for (unsigned j = b_col; j < b_col + 3; ++j)
@@ -147,7 +143,7 @@ bool in_block(board_element *b, unsigned row, unsigned col, unsigned short p) {
     return false;
 }
 
-void calculate_potentials(board_element *b) {
+void calculate_potentials(std::vector<board_element>& b) {
     for (unsigned i = 0; i < BOARD_SIZE; ++i) {
         b[i].potential_set = 0;
         if (!b[i].solved_element) { // element is not yet fixed
@@ -161,7 +157,7 @@ void calculate_potentials(board_element *b) {
     }
 }
 
-bool valid_board(board_element *b) {
+bool valid_board(const std::vector<board_element>& b) {
     bool success = true;
     for (unsigned i = 0; i < BOARD_SIZE; ++i) {
         if (success && b[i].solved_element) { // element is fixed
@@ -175,7 +171,7 @@ bool valid_board(board_element *b) {
     return success;
 }
 
-bool examine_potentials(board_element *b, bool *progress) {
+bool examine_potentials(std::vector<board_element>& b, bool& progress) {
     bool singletons = false;
     for (unsigned i = 0; i < BOARD_SIZE; ++i) {
         if (b[i].solved_element == 0 && b[i].potential_set == 0) // empty set
@@ -228,67 +224,65 @@ bool examine_potentials(board_element *b, bool *progress) {
             }
         }
     }
-    *progress = singletons;
+    progress = singletons;
     return valid_board(b);
 }
 
-void partial_solve(board_element *b, unsigned first_potential_set) {
+void partial_solve(oneapi::tbb::task_group& g,
+                   std::vector<board_element>& b,
+                   unsigned first_potential_set) {
     if (fixed_board(b)) {
         if (find_one)
-            g->cancel();
+            g.cancel();
         if (++nSols == 1 && verbose) {
             print_board(b);
         }
-        free(b);
         return;
     }
     calculate_potentials(b);
     bool progress = true;
-    bool success = examine_potentials(b, &progress);
+    bool success = examine_potentials(b, progress);
     if (success && progress) {
-        partial_solve(b, first_potential_set);
+        partial_solve(g, b, first_potential_set);
     }
     else if (success && !progress) {
-        board_element *new_board;
         while (b[first_potential_set].solved_element != 0)
             ++first_potential_set;
         for (unsigned short potential = 1; potential <= BOARD_DIM; ++potential) {
             if (1 << (potential - 1) & b[first_potential_set].potential_set) {
-                new_board = (board_element *)malloc(BOARD_SIZE * sizeof(board_element));
-                copy_board(b, new_board);
-                new_board[first_potential_set].solved_element = potential;
-                g->run([=] {
-                    partial_solve(new_board, first_potential_set);
+                g.run([&g, b /*make a copy of the board*/, first_potential_set, potential]() {
+                    //as task_group treat passed in functor as const - const_cast is needed
+                    //to allow modification of the copy
+                    auto& new_board = const_cast<std::vector<board_element>&>(b);
+                    new_board[first_potential_set].solved_element = potential;
+                    partial_solve(g, new_board, first_potential_set);
                 });
             }
         }
-        free(b);
-    }
-    else {
-        free(b);
     }
 }
 
-unsigned solve(int p) {
+unsigned solve(int p, utility::measurements& solve_measurements) {
     oneapi::tbb::global_control c(oneapi::tbb::global_control::max_allowed_parallelism, p);
     nSols = 0;
-    board_element *start_board = (board_element *)malloc(BOARD_SIZE * sizeof(board_element));
+    std::vector<board_element> start_board(BOARD_SIZE);
     init_board(start_board, init_values);
-    g = new oneapi::tbb::task_group;
-    oneapi::tbb::tick_count t0 = oneapi::tbb::tick_count::now();
-    partial_solve(start_board, 0);
-    g->wait();
-    solve_time = (oneapi::tbb::tick_count::now() - t0).seconds();
-    delete g;
+    oneapi::tbb::task_group g;
+    solve_measurements.start();
+    partial_solve(g, start_board, 0);
+    g.wait();
+    solve_time = (double)solve_measurements.stop().count() /
+                 std::chrono::microseconds(std::chrono::seconds(1)).count();
     return nSols;
 }
 
-int main(int argc, char *argv[]) {
+int main(int argc, char* argv[]) {
     oneapi::tbb::tick_count mainStartTime = oneapi::tbb::tick_count::now();
 
     utility::thread_number_range threads(utility::get_default_num_threads);
     std::string filename = "";
     bool silent = false;
+    int repeats = 1;
 
     utility::parse_cli_arguments(
         argc,
@@ -297,10 +291,18 @@ int main(int argc, char *argv[]) {
             //"-h" option for displaying help is present implicitly
             .positional_arg(threads, "n-of-threads", utility::thread_number_range_desc)
             .positional_arg(filename, "filename", "input filename")
+            .positional_arg(repeats,
+                            "n-of-repeats",
+                            "repeat each solution this number of times, must be a positive integer")
 
             .arg(verbose, "verbose", "prints the first solution")
             .arg(silent, "silent", "no output except elapsed time")
             .arg(find_one, "find-one", "stops after finding first solution\n"));
+
+    if (repeats < 1) {
+        fprintf(stderr, "Incorrect n-of-repeats=%d, exit.\n", repeats);
+        return -1;
+    }
 
     if (silent)
         verbose = false;
@@ -308,21 +310,39 @@ int main(int argc, char *argv[]) {
     if (!filename.empty())
         read_board(filename.c_str());
     // otherwise (if file name not specified), the default statically initialized board will be used.
-    for (int p = threads.first; p <= threads.last; p = threads.step(p)) {
-        unsigned number = solve(p);
 
-        if (!silent) {
-            if (find_one) {
-                printf("Sudoku: Time to find first solution on %d threads: %6.6f seconds.\n",
-                       p,
-                       solve_time);
+    for (int p = threads.first; p <= threads.last; p = threads.step(p)) {
+        std::string res_info("Sudoku: Time to find");
+        std::ostringstream par_info;
+
+        if (find_one) {
+            res_info += " first solution";
+        }
+        par_info << " on " << p << " threads";
+
+        utility::measurements measurements(repeats);
+
+        for (unsigned int i = 0; i < repeats; i++) {
+            unsigned number = solve(p, measurements);
+            if (!silent) {
+                if (find_one) {
+                    printf("%s%s: %6.6f seconds.\n",
+                           res_info.c_str(),
+                           par_info.str().c_str(),
+                           solve_time);
+                }
+                else {
+                    printf("%s all %u solutions%s: %6.6f seconds.\n",
+                           res_info.c_str(),
+                           number,
+                           par_info.str().c_str(),
+                           solve_time);
+                }
             }
-            else {
-                printf("Sudoku: Time to find all %u solutions on %d threads: %6.6f seconds.\n",
-                       number,
-                       p,
-                       solve_time);
-            }
+        }
+        if (repeats > 1) {
+            res_info += par_info.str() + " Relative_Err : ";
+            utility::report_relative_error(measurements.computeRelError(), res_info);
         }
     }
 

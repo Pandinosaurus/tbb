@@ -1,5 +1,6 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2023 Intel Corporation
+    Copyright (c) 2026 UXL Foundation Contributors
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -117,19 +118,19 @@ struct UnorderedMoveTraitsBase {
     static constexpr std::size_t expected_number_of_items_to_allocate_for_steal_move = 3; // TODO: check
 
     template <typename UnorderedType, typename Iterator>
-    static UnorderedType& construct_container( typename std::aligned_storage<sizeof(UnorderedType)>::type& storage,
+    static UnorderedType& construct_container( utils::UninitializedStorage<UnorderedType>& storage,
                                                Iterator begin, Iterator end )
     {
-        UnorderedType* ptr = reinterpret_cast<UnorderedType*>(&storage);
+        UnorderedType* ptr = &storage;
         new (ptr) UnorderedType(begin, end);
         return *ptr;
     }
 
     template <typename UnorderedType, typename Iterator, typename Allocator>
-    static UnorderedType& construct_container( typename std::aligned_storage<sizeof(UnorderedType)>::type& storage,
-                                                Iterator begin, Iterator end, const Allocator& alloc )
+    static UnorderedType& construct_container( utils::UninitializedStorage<UnorderedType>& storage,
+                                               Iterator begin, Iterator end, const Allocator& alloc )
     {
-        UnorderedType* ptr = reinterpret_cast<UnorderedType*>(&storage);
+        UnorderedType* ptr = &storage;
         new (ptr) UnorderedType(begin, end, /*bucket_count = */4, alloc);
         return *ptr;
     }
@@ -370,6 +371,24 @@ void test_set_comparisons() {
     test_comparisons_basic<integral_container>();
     test_comparisons_basic<two_way_comparable_container>();
     test_two_way_comparable_container<two_way_comparable_container>();
+}
+
+template <typename Container>
+void test_reserve_regression() {
+    Container container;
+
+    float lf = container.max_load_factor();
+    std::size_t buckets = container.unsafe_bucket_count();
+    std::size_t capacity = std::size_t(buckets * lf);
+
+    for (std::size_t elements = 0; elements < capacity; ++elements) {
+        container.reserve(elements);
+        REQUIRE_MESSAGE(container.unsafe_bucket_count() == buckets,
+                        "reserve() should not increase bucket count if the capacity is not reached");
+    }
+
+    container.reserve(capacity * 2);
+    REQUIRE_MESSAGE(container.unsafe_bucket_count() > buckets, "reserve() should increase bucket count if the capacity is reached");
 }
 
 #endif // __TBB_test_common_concurrent_unordered_common

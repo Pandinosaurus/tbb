@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2024 Intel Corporation
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -26,6 +26,7 @@
 #include "common/utils.h"
 #include "common/utils_assert.h"
 #include "common/test_follows_and_precedes_api.h"
+#include "tbb/global_control.h"
 
 #include <atomic>
 
@@ -37,8 +38,8 @@
 const int L = 10;
 const int N = 1000;
 
-using tbb::detail::d1::SUCCESSFULLY_ENQUEUED;
-using tbb::detail::d1::graph_task;
+using tbb::detail::d2::SUCCESSFULLY_ENQUEUED;
+using tbb::detail::d2::graph_task;
 
 template< typename T >
 struct serial_receiver : public tbb::flow::receiver<T>, utils::NoAssign {
@@ -51,6 +52,12 @@ struct serial_receiver : public tbb::flow::receiver<T>, utils::NoAssign {
        CHECK_MESSAGE( next_value++  == v, "" );
        return const_cast<graph_task*>(SUCCESSFULLY_ENQUEUED);
    }
+
+#if __TBB_PREVIEW_FLOW_GRAPH_TRY_PUT_AND_WAIT
+    graph_task * try_put_task( const T &v, const tbb::detail::d2::message_metainfo& ) override {
+        return try_put_task(v);
+    }
+#endif
 
     tbb::flow::graph& graph_reference() const override {
         return my_graph;
@@ -69,6 +76,12 @@ struct parallel_receiver : public tbb::flow::receiver<T>, utils::NoAssign {
        ++my_count;
        return const_cast<graph_task*>(SUCCESSFULLY_ENQUEUED);
     }
+
+#if __TBB_PREVIEW_FLOW_GRAPH_TRY_PUT_AND_WAIT
+    graph_task * try_put_task( const T &v, const tbb::detail::d2::message_metainfo& ) override {
+        return try_put_task(v);
+    }
+#endif
 
     tbb::flow::graph& graph_reference() const override {
         return my_graph;
@@ -221,7 +234,7 @@ int test_serial() {
    return 0;
 }
 
-// reported bug in limiter (http://software.intel.com/en-us/comment/1752355)
+// reported bug in limiter (https://community.intel.com/t5/Intel-oneAPI-Threading-Building/multifun-node-try-put-several-messages-to-one-successor-crashes/m-p/922844)
 #define DECREMENT_OUTPUT 1  // the port number of the decrement output of the multifunction_node
 #define LIMITER_OUTPUT 0    // port number of the integer output
 
@@ -300,7 +313,7 @@ test_multifunction_to_limiter(int _max, int _nparallel) {
     emit_sum = 0;
     receive_count = 0;
     receive_sum = 0;
-    local_cnt = 0;;
+    local_cnt = 0;
     mf_node.try_put(1);
     g.wait_for_all();
     CHECK_MESSAGE( (emit_count == receive_count), "counts do not match");
@@ -355,14 +368,7 @@ void test_reserve_release_messages() {
     broad.try_put(1); //failed message retrieved.
     g.wait_for_all();
 
-#if __GNUC__ && __GNUC__ < 10 && !TBB_USE_DEBUG
-    // Seemingly, GNU compiler generates incorrect code for the call of limiter.register_successor in release (-03)
-    // The function pointer to make_edge workarounds the issue for unknown reason
-    auto make_edge_ptr = make_edge<int>;
-    make_edge_ptr(limit, output_queue); //putting the successor back
-#else
-    make_edge(limit, output_queue); //putting the successor back
-#endif
+    tbb::flow::make_edge(limit, output_queue); //putting the successor back
 
     broad.try_put(1);  //drop the count
 
@@ -419,26 +425,49 @@ void test_decrementer() {
         CHECK_MESSAGE( actual == expected2[m++], "" );
     CHECK_MESSAGE( ( sizeof(expected2) / sizeof(expected2[0]) == m), "Not all messages have been processed." );
     g.wait_for_all();
+
+    const size_t threshold3 = 10;
+    tbb::flow::limiter_node<int, long long> limit3(g, threshold3);
+    make_edge(limit3, queue);
+    long long decrement_value3 = 3;
+    CHECK_MESSAGE( limit3.decrementer().try_put( -decrement_value3 ),
+                   "Limiter node decrementer's port does not accept message" );
+
+    m = 0;
+    while( limit3.try_put( m ) ){ m++; };
+    CHECK_MESSAGE( m == threshold3 - decrement_value3, "Not all messages have been accepted." );
+
+    actual = -1; m = 0;
+    while( queue.try_get(actual) ){
+        CHECK_MESSAGE( actual == m++, "Not all messages have been processed." );
+    }
+
+    g.wait_for_all();
+    CHECK_MESSAGE( m == threshold3 - decrement_value3, "Not all messages have been processed." );
 }
 
 void test_try_put_without_successors() {
     tbb::flow::graph g;
-    std::size_t try_put_num{3};
+    int try_put_num{3};
     tbb::flow::buffer_node<int> bn(g);
     tbb::flow::limiter_node<int> ln(g, try_put_num);
+
     tbb::flow::make_edge(bn, ln);
-    std::size_t i = 1;
+
+    int i = 1;
     for (; i <= try_put_num; i++)
         bn.try_put(i);
 
-    std::atomic<std::size_t> counter{0};
+    std::atomic<int> counter{0};
     tbb::flow::function_node<int, int> fn(g, tbb::flow::unlimited,
         [&](int input) {
             counter += input;
             return int{};
         }
     );
+
     tbb::flow::make_edge(ln, fn);
+
     g.wait_for_all();
     CHECK((counter == i * try_put_num / 2));
 
@@ -489,6 +518,96 @@ void test_deduction_guides() {
 }
 #endif
 
+void test_decrement_while_try_put_task() {
+    constexpr int threshold = 50000;
+
+    tbb::flow::graph graph{};
+    std::atomic<int> processed;
+    tbb::flow::input_node<int> input{ graph, [&](tbb::flow_control & fc) -> int {
+        static int i = {};
+        if (i++ >= threshold) fc.stop();
+        return i;
+    }};
+    tbb::flow::limiter_node<int, int> blockingNode{ graph, 1 };
+    tbb::flow::multifunction_node<int, std::tuple<int>> processing{ graph, tbb::flow::serial,
+        [&](const int & value, typename decltype(processing)::output_ports_type & out) {
+            if (value != threshold)
+                std::get<0>(out).try_put(1);
+            processed.store(value);
+        }};
+
+    tbb::flow::make_edge(input, blockingNode);
+    tbb::flow::make_edge(blockingNode, processing);
+    tbb::flow::make_edge(processing, blockingNode.decrementer());
+
+    input.activate();
+
+    graph.wait_for_all();
+    CHECK_MESSAGE(processed.load() == threshold, "decrementer terminate flow graph work");
+}
+
+#if __TBB_PREVIEW_FLOW_GRAPH_TRY_PUT_AND_WAIT
+void test_try_put_and_wait() {
+    tbb::task_arena arena(1);
+
+    arena.execute([] {
+        tbb::flow::graph g;
+
+        std::vector<int> start_work_items;
+        std::vector<int> processed_items;
+        std::vector<int> new_work_items;
+        int wait_message = 10;
+
+        for (int i = 0; i < wait_message; ++i) {
+            start_work_items.emplace_back(i);
+            new_work_items.emplace_back(i + 1 + wait_message);
+        }
+
+        std::size_t threshold = start_work_items.size() + 1;
+        CHECK_MESSAGE(new_work_items.size() < threshold, "Incorrect test setup");
+
+        tbb::flow::limiter_node<int> limiter(g, threshold);
+        tbb::flow::function_node<int, tbb::flow::continue_msg> function(g, tbb::flow::serial,
+            [&](int input) {
+                if (input == wait_message) {
+                    for (auto item : new_work_items) {
+                        limiter.try_put(item);
+                    }
+                }
+                processed_items.emplace_back(input);
+            });
+
+        tbb::flow::make_edge(limiter, function);
+        tbb::flow::make_edge(function, limiter.decrementer());
+
+        for (auto item : start_work_items) {
+            limiter.try_put(item);
+        }
+
+        limiter.try_put_and_wait(wait_message);
+
+        // Since function is a serial queueing function_node, all start_work_items would be added to the queue
+        // and processed in FIFO order. wait_message would be added and processed last. Each item in start_work_items
+        // should put an item to a decrementer edge and hence new_work_items should not be missed as well
+
+        std::size_t check_index = 0;
+
+        for (auto item : start_work_items) {
+            CHECK_MESSAGE(processed_items[check_index++] == item, "Unexpected start_work_items processing");
+        }
+        CHECK_MESSAGE(processed_items[check_index++] == wait_message, "Unexpected wait_message processing");
+        CHECK_MESSAGE(check_index == processed_items.size(), "Unexpected number of messages");
+
+        g.wait_for_all();
+
+        for (auto item : new_work_items) {
+            CHECK_MESSAGE(processed_items[check_index++] == item, "Unexpected new_work_items processing");
+        }
+        CHECK(check_index == processed_items.size());
+    });
+}
+#endif
+
 //! Test puts on limiter_node with decrements and varying parallelism levels
 //! \brief \ref error_guessing
 TEST_CASE("Serial and parallel tests") {
@@ -507,6 +626,12 @@ TEST_CASE("Serial and parallel tests") {
 //! \brief \ref error_guessing
 TEST_CASE("Test continue_msg reception") {
     test_continue_msg_reception();
+}
+
+//! Test put message on decrementer port does not stop message flow
+//! \brief \ref error_guessing
+TEST_CASE("Test try_put to decrementer while try_put to limiter_node") {
+    test_decrement_while_try_put_task();
 }
 
 //! Test multifunction_node connected to limiter_node
@@ -548,5 +673,33 @@ TEST_CASE( "Support for follows and precedes API" ) {
 //! \brief \ref requirement
 TEST_CASE( "Deduction guides" ) {
     test_deduction_guides();
+}
+#endif
+
+struct TestLargeStruct {
+    char bytes[512]{ 0 };
+};
+
+//! Test correct node deallocation while using small_object_pool.
+//! (see https://github.com/oneapi-src/oneTBB/issues/639)
+//! \brief \ref error_guessing
+TEST_CASE("Test correct node deallocation while using small_object_pool") {
+    tbb::flow::graph graph;
+    tbb::flow::queue_node<TestLargeStruct> input_node( graph );
+    tbb::flow::function_node<TestLargeStruct> func( graph, tbb::flow::serial,
+        [](const TestLargeStruct& input) { return input; } );
+
+    tbb::flow::make_edge( input_node, func );
+    CHECK( input_node.try_put( TestLargeStruct{} ) );
+    graph.wait_for_all();
+
+    tbb::task_scheduler_handle handle{ tbb::attach{} };
+    tbb::finalize( handle, std::nothrow );
+}
+
+#if __TBB_PREVIEW_FLOW_GRAPH_TRY_PUT_AND_WAIT
+//! \brief \ref error_guessing
+TEST_CASE("test limiter_node try_put_and_wait") {
+    test_try_put_and_wait();
 }
 #endif

@@ -1,5 +1,6 @@
 /*
-    Copyright (c) 2019-2021 Intel Corporation
+    Copyright (c) 2019-2025 Intel Corporation
+    Copyright (c) 2025 UXL Foundation Contributors
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -17,10 +18,9 @@
 #ifndef __TBB_test_common_arena_constraints_H_
 #define __TBB_test_common_arena_constraints_H_
 
-#define TBB_PREVIEW_TASK_ARENA_CONSTRAINTS_EXTENSION 1
-#define __TBB_EXTRA_DEBUG 1
+#define TBB_PREVIEW_TASK_ARENA_CORE_TYPE_SELECTOR 1
 
-#if _WIN32 || _WIN64
+#if !defined(_CRT_SECURE_NO_WARNINGS) && (_WIN32 || _WIN64)
 #define _CRT_SECURE_NO_WARNINGS
 #endif
 
@@ -33,14 +33,33 @@
 #include "oneapi/tbb/task_arena.h"
 #include "oneapi/tbb/spin_mutex.h"
 
+#include <bitset>
+#include <tuple>
 #include <vector>
 #include <unordered_set>
 
 #if (_WIN32 || _WIN64) && __TBB_HWLOC_VALID_ENVIRONMENT
 #include <windows.h>
-int get_processors_groups_count() { return GetActiveProcessorGroupCount(); }
+int get_processors_group_count() {
+    SYSTEM_INFO si;
+    GetNativeSystemInfo(&si);
+    DWORD_PTR pam, sam, m = 1;
+    GetProcessAffinityMask( GetCurrentProcess(), &pam, &sam );
+    int nproc = 0;
+    for ( std::size_t i = 0; i < sizeof(DWORD_PTR) * CHAR_BIT; ++i, m <<= 1 ) {
+        if ( pam & m )
+            ++nproc;
+    }
+    // Setting up processor groups in case the process does not restrict affinity mask and more than one processor group is present
+    if ( nproc == (int)si.dwNumberOfProcessors  ) {
+        // The process does not have restricting affinity mask and multiple processor groups are possible
+        return (int)GetActiveProcessorGroupCount();
+    } else {
+        return 1;
+    }
+}
 #else
-int get_processors_groups_count() { return 1; }
+int get_processors_group_count() { return 1; }
 #endif
 
 //TODO: Write a test that checks for memory leaks during dynamic link/unlink of TBBbind.
@@ -69,11 +88,13 @@ int get_processors_groups_count() { return 1; }
 #endif
 
 #define __HWLOC_HYBRID_CPUS_INTERFACES_PRESENT (HWLOC_API_VERSION >= 0x20400)
+#define __HWLOC_TOPOLOGY_FLAG_RESTRICT_TO_CPUBINDING_PRESENT (HWLOC_API_VERSION >= 0x20500)
 // At this moment the hybrid CPUs HWLOC interfaces returns unexpected results on some Windows machines
 // in the 32-bit arch mode.
 #define __HWLOC_HYBRID_CPUS_INTERFACES_VALID (!_WIN32 || _WIN64)
 
 #define __HYBRID_CPUS_TESTING __HWLOC_HYBRID_CPUS_INTERFACES_PRESENT && __HWLOC_HYBRID_CPUS_INTERFACES_VALID
+#define __HWLOC_CPUBIND_PRESENT (!__APPLE__ && !__gnu_hurd__)
 
 // Macro to check hwloc interfaces return codes
 #define hwloc_require_ex(command, ...)                                          \
@@ -153,20 +174,33 @@ private:
 
     system_info() {
         hwloc_require_ex(hwloc_topology_init, &topology);
+#if __HWLOC_TOPOLOGY_FLAG_RESTRICT_TO_CPUBINDING_PRESENT
+        if ( get_processors_group_count() == 1 ) {
+            REQUIRE(
+                hwloc_topology_set_flags(topology,
+                    HWLOC_TOPOLOGY_FLAG_IS_THISSYSTEM |
+                    HWLOC_TOPOLOGY_FLAG_RESTRICT_TO_CPUBINDING) == 0
+            );
+        }
+#endif
         hwloc_require_ex(hwloc_topology_load, topology);
 
-        if ( get_processors_groups_count() > 1 ) {
+#if __HWLOC_CPUBIND_PRESENT
+        if ( get_processors_group_count() > 1 ) {
             process_cpuset = hwloc_bitmap_dup(hwloc_topology_get_complete_cpuset(topology));
         } else {
             process_cpuset = hwloc_bitmap_alloc();
             hwloc_require_ex(hwloc_get_cpubind, topology, process_cpuset, 0);
         }
+#else
+        process_cpuset = hwloc_bitmap_dup(hwloc_topology_get_complete_cpuset(topology));
+#endif
 
         hwloc_obj_t current_numa_node = nullptr;
         index_info current_node_info{};
         while ((current_numa_node = hwloc_get_next_obj_by_type(topology,
                                                                HWLOC_OBJ_NUMANODE,
-                                                               current_numa_node))) {
+                                                               current_numa_node)) != nullptr) {
             current_node_info.index = static_cast<int>(current_numa_node->logical_index);
             current_node_info.cpuset = hwloc_bitmap_dup(current_numa_node->cpuset);
             hwloc_bitmap_and(current_node_info.cpuset, current_node_info.cpuset, process_cpuset);
@@ -235,7 +269,7 @@ private:
 
         hwloc_bitmap_t core_affinity = hwloc_bitmap_alloc();
         hwloc_obj_t current_core = nullptr;
-        while ((current_core = hwloc_get_next_obj_by_type(topology, HWLOC_OBJ_CORE, current_core))) {
+        while ((current_core = hwloc_get_next_obj_by_type(topology, HWLOC_OBJ_CORE, current_core)) != nullptr) {
             hwloc_bitmap_and(core_affinity, process_cpuset, current_core->cpuset);
             if (hwloc_bitmap_weight(core_affinity) > 0) {
                 core_infos.emplace_back(core_affinity);
@@ -279,7 +313,7 @@ private:
             hwloc_bitmap_or(buffer_cpu_set, buffer_cpu_set, numa_node_info.cpuset);
         }
         REQUIRE_MESSAGE( hwloc_bitmap_isequal(buffer_cpu_set, process_cpuset),
-            "Intersected NUMA nodes masks should be equal to process affinity.(reference)");
+            "The union of NUMA nodes masks should be equal to process affinity.(reference)");
 
         // Core types topology verification
         hwloc_bitmap_zero(buffer_cpu_set);
@@ -290,7 +324,7 @@ private:
             hwloc_bitmap_or(buffer_cpu_set, buffer_cpu_set, cpu_kind_info.cpuset);
         }
         REQUIRE_MESSAGE(hwloc_bitmap_isequal(buffer_cpu_set, process_cpuset),
-            "Intersected core type masks should be equal to process affinity.(reference)");
+            "The union of core type masks should be equal to process affinity.(reference)");
 
         hwloc_bitmap_free(buffer_cpu_set);
     }
@@ -325,7 +359,11 @@ public:
     static affinity_mask allocate_current_affinity_mask() {
         affinity_mask result = hwloc_bitmap_alloc();
         instance().memory_handler.insert(result);
+#if __HWLOC_CPUBIND_PRESENT
         hwloc_require_ex(hwloc_get_cpubind, instance().topology, result, HWLOC_CPUBIND_THREAD);
+#else
+        hwloc_bitmap_copy(result, hwloc_topology_get_complete_cpuset(instance().topology));
+#endif
         REQUIRE_MESSAGE(!hwloc_bitmap_iszero(result), "Empty current affinity mask.");
         return result;
     }
@@ -355,6 +393,28 @@ public:
 
 system_info* system_info::system_info_ptr{nullptr};
 
+struct multi_core_type_helper {
+    tbb::task_arena::constraints constraints;
+    std::vector<tbb::core_type_id> ids;
+
+    multi_core_type_helper(const tbb::task_arena::constraints& constraints_)
+        : constraints(constraints_),
+        ids(tbb::detail::multi_core_type_codec::decode(constraints.core_type))
+    {
+        if (ids.size() > 1) {
+            constraints.set_core_type(tbb::task_arena::selectable);
+        }
+    }
+
+    bool selectable() const {
+        return constraints.core_type == tbb::task_arena::selectable;
+    }
+
+    int operator()(std::tuple<int, size_t, size_t> core_type) const {
+        return int(ids.end() - std::find(ids.begin(), ids.end(), std::get<0>(core_type))); // 0 (not found) or positive
+    }
+};
+
 system_info::affinity_mask prepare_reference_affinity_mask(const tbb::task_arena::constraints& c) {
     auto reference_affinity = system_info::allocate_empty_affinity_mask();
     hwloc_bitmap_copy(reference_affinity, system_info::get_process_affinity_mask());
@@ -370,7 +430,33 @@ system_info::affinity_mask prepare_reference_affinity_mask(const tbb::task_arena
     }
 
     if (c.core_type != tbb::task_arena::automatic) {
-        const auto& core_types_info = system_info::get_cpu_kinds_info();
+        auto core_types_info = system_info::get_cpu_kinds_info();
+
+        // Add core type combinations
+        size_t num_core_types = core_types_info.size();
+        for (uint32_t mask = 0; mask < (1u << num_core_types); ++mask) {
+            std::bitset<32> bits(mask);
+            if (bits.count() < 2) {
+                // Skip empty and single-type combinations
+                continue;
+            }
+
+            index_info combination;
+            combination.index = int(tbb::detail::multi_core_type_codec::encoding_format <<
+                tbb::detail::multi_core_type_codec::bitmask_width); // multiple core type format
+            combination.index |= mask;
+            combination.concurrency = 0;
+            combination.cpuset = hwloc_bitmap_alloc();
+
+            for (size_t i = 0; i < num_core_types; ++i) {
+                if (bits[i]) {
+                    combination.concurrency += core_types_info[i].concurrency;
+                    hwloc_bitmap_or(combination.cpuset, combination.cpuset, core_types_info[i].cpuset);
+                }
+            }
+            core_types_info.push_back(combination);
+        }
+
         auto required_info = std::find_if(core_types_info.begin(), core_types_info.end(),
             [&](index_info info) { return info.index == c.core_type; }
         );
@@ -382,15 +468,24 @@ system_info::affinity_mask prepare_reference_affinity_mask(const tbb::task_arena
 }
 
 void test_constraints_affinity_and_concurrency(tbb::task_arena::constraints constraints,
+                                               multi_core_type_helper helper,
                                                system_info::affinity_mask arena_affinity) {
-    int default_concurrency = tbb::info::default_concurrency(constraints);
+    // The default concurrency returned by the library (with the same selector as for the arena, if provided)
+    int default_concurrency = tbb::info::default_concurrency(helper.constraints, helper);
     system_info::affinity_mask reference_affinity = prepare_reference_affinity_mask(constraints);
-    int max_threads_per_core = system_info::get_maximal_threads_per_core();
+    int max_threads_per_core = static_cast<int>(system_info::get_maximal_threads_per_core());
+
+    int constrained_num_cpus = INT_MAX;
+#if __TBB_USE_CGROUPS
+    (void)utils::cgroup_info::is_cpu_constrained(constrained_num_cpus);
+#endif
 
     if (constraints.max_threads_per_core == tbb::task_arena::automatic || constraints.max_threads_per_core == max_threads_per_core) {
         REQUIRE_MESSAGE(hwloc_bitmap_isequal(reference_affinity, arena_affinity),
-            "Wrong affinity mask was applied for the constraints instance.");
-        REQUIRE_MESSAGE(hwloc_bitmap_weight(reference_affinity) == default_concurrency,
+                        "Wrong affinity mask was applied for the constraints instance.");
+        const int reference_concurrency =
+            std::min(hwloc_bitmap_weight(reference_affinity), constrained_num_cpus);
+        REQUIRE_MESSAGE(reference_concurrency == default_concurrency,
             "Wrong default_concurrency was returned for the constraints instance.");
     } else {
         REQUIRE_MESSAGE(constraints.max_threads_per_core < max_threads_per_core,
@@ -412,10 +507,11 @@ void test_constraints_affinity_and_concurrency(tbb::task_arena::constraints cons
                     "Wrong number of threads may be scheduled to some core.");
             }
         }
-        REQUIRE_MESSAGE(valid_concurrency == default_concurrency,
-            "Wrong default_concurrency was returned for the constraints instance.");
         REQUIRE_MESSAGE(valid_concurrency == hwloc_bitmap_weight(arena_affinity),
             "Wrong number of bits inside the affinity mask.");
+        valid_concurrency = std::min(valid_concurrency, constrained_num_cpus);
+        REQUIRE_MESSAGE(valid_concurrency == default_concurrency,
+            "Wrong default_concurrency was returned for the constraints instance.");
     }
 }
 
@@ -425,27 +521,23 @@ system_info::affinity_mask get_arena_affinity(tbb::task_arena& ta) {
         arena_affinity = system_info::allocate_current_affinity_mask();
     });
 
-    utils::SpinBarrier barrier;
-    barrier.initialize(ta.max_concurrency() - 1);
+    utils::SpinBarrier exit_barrier(ta.max_concurrency());
     tbb::spin_mutex affinity_mutex{};
     for (int i = 0; i < ta.max_concurrency() - 1; ++i) {
-        ta.enqueue([&]
+        ta.enqueue([&] {
             {
-                barrier.wait();
                 tbb::spin_mutex::scoped_lock lock(affinity_mutex);
                 system_info::affinity_mask thread_affinity = system_info::allocate_current_affinity_mask();
-                if (get_processors_groups_count() == 1) {
+                if (get_processors_group_count() == 1) {
                     REQUIRE_MESSAGE(hwloc_bitmap_isequal(thread_affinity, arena_affinity),
                         "Threads have different masks on machine without several processors groups.");
                 }
                 hwloc_bitmap_or(arena_affinity, arena_affinity, thread_affinity);
             }
-        );
+            exit_barrier.wait();
+        });
     }
-
-    //TODO: Synchronization using atomics without debug_wait_until_empty() cause
-    // a race which cause the absence of on_scheduler_exit() call.
-    ta.debug_wait_until_empty();
+    exit_barrier.wait();
     return arena_affinity;
 }
 
@@ -486,6 +578,20 @@ constraints_container generate_constraints_variety() {
 
 #if __HYBRID_CPUS_TESTING
         std::vector<tbb::core_type_id> core_types = tbb::info::core_types();
+
+        // Generate all possible combinations of core_types
+        std::vector<std::vector<tbb::core_type_id>> core_type_combinations;
+        size_t num_core_types = core_types.size();
+        for (uint32_t mask = 0; mask < (1u << num_core_types); ++mask) {
+            std::vector<tbb::core_type_id> combination;
+            for (size_t i = 0; i < num_core_types; ++i) {
+                if (mask & (1u << i)) {
+                    combination.push_back(core_types[i]);
+                }
+            }
+            core_type_combinations.push_back(combination);
+        }
+
         core_types.push_back((tbb::core_type_id)tbb::task_arena::automatic);
 #endif
 
@@ -528,19 +634,57 @@ constraints_container generate_constraints_variety() {
                     );
                 }
             }
+            for (const auto& combination : core_type_combinations) {
+                results.insert(constraints{}.set_core_type(tbb::detail::multi_core_type_codec::encode(combination)));
+
+                results.insert(
+                    constraints{}
+                    .set_numa_id(numa_node)
+                    .set_core_type(tbb::detail::multi_core_type_codec::encode(combination))
+                );
+
+                for (const auto& max_threads_per_core : system_info::get_available_max_threads_values()) {
+                    results.insert(
+                        constraints{}
+                        .set_max_threads_per_core(max_threads_per_core)
+                    );
+
+                    results.insert(
+                        constraints{}
+                        .set_numa_id(numa_node)
+                        .set_max_threads_per_core(max_threads_per_core)
+                    );
+
+                    results.insert(
+                        constraints{}
+                        .set_core_type(tbb::detail::multi_core_type_codec::encode(combination))
+                        .set_max_threads_per_core(max_threads_per_core)
+                    );
+
+                    results.insert(
+                        constraints{}
+                        .set_numa_id(numa_node)
+                        .set_core_type(tbb::detail::multi_core_type_codec::encode(combination))
+                        .set_max_threads_per_core(max_threads_per_core)
+                    );
+                }
+            }
 #endif /*__HYBRID_CPUS_TESTING*/
         }
 
+        int max_threads_per_core = system_info::get_available_max_threads_values().back();
         // Some constraints may cause unexpected behavior, which would be fixed later.
-        if (get_processors_groups_count() > 1) {
-            for(auto it = results.begin(); it != results.end(); ++it) {
-                if (it->max_threads_per_core != tbb::task_arena::automatic
+        if (get_processors_group_count() > 1) {
+            for(auto it = results.begin(); it != results.end();) {
+                if (it->max_threads_per_core != max_threads_per_core
                    && (it->numa_id == tbb::task_arena::automatic || tbb::info::numa_nodes().size() == 1)
 #if __HYBRID_CPUS_TESTING
                    && (it->core_type == tbb::task_arena::automatic || tbb::info::core_types().size() == 1)
 #endif /*__HYBRID_CPUS_TESTING*/
                 ) {
                     it = results.erase(it);
+                } else {
+                    ++it;
                 }
             }
         }

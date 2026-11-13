@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2024 Intel Corporation
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -18,8 +18,10 @@
 
 #include "main.h"
 #include "governor.h"
+#include "threading_control.h"
 #include "environment.h"
 #include "market.h"
+#include "tcm_adaptor.h"
 #include "misc.h"
 #include "itt_notify.h"
 
@@ -35,16 +37,14 @@ namespace r1 {
 //------------------------------------------------------------------------
 // governor data
 basic_tls<thread_data*> governor::theTLS;
-unsigned governor::DefaultNumberOfThreads;
-size_t governor::DefaultPageSize;
 rml::tbb_factory governor::theRMLServerFactory;
 bool governor::UsePrivateRML;
 bool governor::is_rethrow_broken;
 
 //------------------------------------------------------------------------
-// market data
-market* market::theMarket;
-market::global_market_mutex_type market::theMarketMutex;
+// threading_control data
+threading_control* threading_control::g_threading_control;
+threading_control::global_mutex_type threading_control::g_threading_control_mutex;
 
 //------------------------------------------------------------------------
 // context propagation data
@@ -72,28 +72,15 @@ void ITT_DoUnsafeOneTimeInitialization();
 static __TBB_InitOnce __TBB_InitOnceHiddenInstance;
 #endif
 
-#if TBB_USE_ASSERT
-std::atomic<int> the_observer_proxy_count;
-
-struct check_observer_proxy_count {
-    ~check_observer_proxy_count() {
-        if (the_observer_proxy_count != 0) {
-            runtime_warning("Leaked %ld observer_proxy objects\n", long(the_observer_proxy_count));
-        }
-    }
-};
-// The proxy count checker shall be defined after __TBB_InitOnceHiddenInstance to check the count
-// after auto termination.
-static check_observer_proxy_count the_check_observer_proxy_count;
-#endif /* TBB_USE_ASSERT */
-
 //------------------------------------------------------------------------
 // __TBB_InitOnce
 //------------------------------------------------------------------------
 
 void __TBB_InitOnce::add_ref() {
-    if( ++count==1 )
+    if (++count == 1) {
         governor::acquire_resources();
+        tcm_adaptor::initialize();
+    }
 }
 
 void __TBB_InitOnce::remove_ref() {
@@ -102,6 +89,7 @@ void __TBB_InitOnce::remove_ref() {
     if( k==0 ) {
         governor::release_resources();
         ITT_FINI_ITTLIB();
+        ITT_RELEASE_RESOURCES();
     }
 }
 
@@ -118,8 +106,10 @@ void DoOneTimeInitialization() {
     // No fence required for load of InitializationDone, because we are inside a critical section.
     if( !__TBB_InitOnce::InitializationDone ) {
         __TBB_InitOnce::add_ref();
-        if( GetBoolEnvironmentVariable("TBB_VERSION") )
+        if( GetBoolEnvironmentVariable("TBB_VERSION") ) {
             PrintVersion();
+            tcm_adaptor::print_version();
+        }
         bool itt_present = false;
 #if __TBB_USE_ITT_NOTIFY
         ITT_DoUnsafeOneTimeInitialization();
@@ -147,7 +137,7 @@ extern "C" bool WINAPI DllMain( HANDLE /*hinstDLL*/, DWORD reason, LPVOID lpvRes
         case DLL_PROCESS_DETACH:
             // Since THREAD_DETACH is not called for the main thread, call auto-termination
             // here as well - but not during process shutdown (due to risk of a deadlock).
-            if ( lpvReserved==NULL ) { // library unload
+            if ( lpvReserved == nullptr ) { // library unload
                 governor::terminate_external_thread();
             }
             __TBB_InitOnce::remove_ref();

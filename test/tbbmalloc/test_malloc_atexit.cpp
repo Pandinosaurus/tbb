@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2024 Intel Corporation
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -33,6 +33,8 @@
 #if _USRDLL
 #if _WIN32||_WIN64
 extern __declspec(dllexport)
+#else
+__TBB_EXPORT
 #endif
 bool dll_isMallocOverloaded()
 #else
@@ -41,7 +43,7 @@ bool exe_isMallocOverloaded()
 {
     const size_t reqSz = 8;
     void *o = malloc(reqSz);
-    bool ret = __TBB_malloc_safer_msize(o, NULL) >= reqSz;
+    bool ret = __TBB_malloc_safer_msize(o, nullptr) >= reqSz;
     free(o);
     return ret;
 }
@@ -60,7 +62,7 @@ bool exe_isMallocOverloaded()
 #endif
 #include <signal.h>
 
-#if __linux__ && !__ANDROID__
+#if __unix__ && !__ANDROID__
 extern "C" {
 void __libc_free(void *ptr);
 void *__libc_realloc(void *ptr, size_t size);
@@ -76,13 +78,13 @@ void *realloc(void *ptr, size_t size)
     return __libc_realloc(ptr, size);
 }
 } // extern "C"
-#endif // __linux__ && !__ANDROID__
+#endif // __unix__ && !__ANDROID__
 
 #endif // MALLOC_UNIXLIKE_OVERLOAD_ENABLED || MALLOC_ZONE_OVERLOAD_ENABLED
 
 // Even when the test is skipped, dll source must not be empty to generate .lib to link with.
 
-#ifndef _PGO_INSTRUMENT
+#if !defined(_PGO_INSTRUMENT) && !__TBB_USE_ADDRESS_SANITIZER
 void dummyFunction() {}
 
 // TODO: enable the check under Android
@@ -111,10 +113,10 @@ void TestReplacedAllocFunc()
     if (sigaction(SIGSEGV, &sa, &sa_default))
         ASSERT(0, "sigaction failed");
 
-    ASSERT(malloc_usable_size(p) >= 16, NULL);
+    ASSERT(malloc_usable_size(p) >= 16, nullptr);
     free(p);
     // no more unsafe actions, restore SIGSEGV
-    if (sigaction(SIGSEGV, &sa_default, NULL))
+    if (sigaction(SIGSEGV, &sa_default, nullptr))
         ASSERT(0, "sigaction failed");
 }
 #else
@@ -132,7 +134,7 @@ public:
 };
 
 static Foo f;
-#endif
+#endif // !defined(_PGO_INSTRUMENT) && !__TBB_USE_ADDRESS_SANITIZER
 
 int main() {}
 
@@ -149,6 +151,9 @@ bool dll_isMallocOverloaded();
 #ifdef _PGO_INSTRUMENT
 //! \brief \ref error_guessing
 TEST_CASE("Known issue: test_malloc_atexit hangs if compiled with -prof-genx\n" * doctest::skip(true)) {}
+#elif __TBB_USE_ADDRESS_SANITIZER
+//! \brief \ref error_guessing
+TEST_CASE("Known issue: test_malloc_atexit is not applicable under ASAN\n" * doctest::skip(true)) {}
 #else
 // Check common/allocator_overload.h for skip cases
 #if !HARNESS_SKIP_TEST

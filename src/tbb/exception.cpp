@@ -1,5 +1,6 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2022 Intel Corporation
+    Copyright (c) 2026 UXL Foundation Contributors
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -13,6 +14,7 @@
     See the License for the specific language governing permissions and
     limitations under the License.
 */
+#include "misc.h"
 
 #include "oneapi/tbb/detail/_exception.h"
 #include "oneapi/tbb/detail/_assert.h"
@@ -41,6 +43,7 @@ const char* user_abort::what() const noexcept(true) { return "User-initiated abo
 const char* missing_wait::what() const noexcept(true) { return "wait() was not called on the structured_task_group"; }
 
 #if TBB_USE_EXCEPTIONS
+    // if throw, report to stderr which exception is being thrown and call std::terminate
     template <typename F>
     /*[[noreturn]]*/ void do_throw_noexcept(F throw_func) noexcept {
         throw_func();
@@ -59,20 +62,26 @@ const char* missing_wait::what() const noexcept(true) { return "wait() was not c
     bool terminate_on_exception(); // defined in global_control.cpp and ipc_server.cpp
 
     template <typename F>
-    /*[[noreturn]]*/ void do_throw(F throw_func) {
+    /*[[noreturn]]*/ void do_throw(F throw_func, const char* exc_name, const char* init_args) {
         if (terminate_on_exception()) {
-            do_throw_noexcept(throw_func);
+            char buf[256] = { 0 };
+            std::snprintf(buf, sizeof(buf),
+                      "Terminating due to exception: %s with arguments: %s",
+                      exc_name, init_args);
+            if (!try_call_user_handler_on_exception(buf))
+                do_throw_noexcept(throw_func);
         }
         throw_func();
     }
 
-    #define DO_THROW(exc, init_args) do_throw( []{ throw exc init_args; } );
+    #define DO_THROW(exc, init_args) do_throw( []{ throw exc init_args; }, #exc, #init_args);
 #else /* !TBB_USE_EXCEPTIONS */
-    #define PRINT_ERROR_AND_ABORT(exc_name, msg) \
-        std::fprintf (stderr, "Exception %s with message %s would have been thrown, "  \
+    #define PRINT_ERROR_AND_ABORT(exc_name, msg) { \
+        char msg_buf[1024] = { 0 }; \
+        std::snprintf(msg_buf, sizeof(msg_buf), \
+            "Exception %s with message %s would have been thrown, "  \
             "if exception handling had not been disabled. Aborting.\n", exc_name, msg); \
-        std::fflush(stderr); \
-        std::abort();
+        if (!try_call_user_handler_on_exception(msg_buf)) throw_for_noexcept_default(msg_buf); }
     #define DO_THROW(exc, init_args) PRINT_ERROR_AND_ABORT(#exc, #init_args)
 #endif /* !TBB_USE_EXCEPTIONS */
 
@@ -88,13 +97,8 @@ void throw_exception ( exception_id eid ) {
     case exception_id::invalid_load_factor: DO_THROW(std::out_of_range, ("Invalid hash load factor")); break;
     case exception_id::invalid_key: DO_THROW(std::out_of_range, ("invalid key")); break;
     case exception_id::bad_tagged_msg_cast: DO_THROW(std::runtime_error, ("Illegal tagged_msg cast")); break;
-#if __TBB_SUPPORTS_WORKERS_WAITING_IN_TERMINATE
     case exception_id::unsafe_wait: DO_THROW(unsafe_wait, ("Unsafe to wait further")); break;
-#endif
-#if __TBB_PREVIEW_TASK_GROUP_EXTENSIONS
-    case exception_id::bad_task_handle:                   DO_THROW(std::runtime_error, ("Attempt to schedule empty task_handle")); break;
-    case exception_id::bad_task_handle_wrong_task_group:  DO_THROW(std::runtime_error, ("Attempt to schedule task_handle into different task_group")); break;
-#endif
+    case exception_id::bad_array_new_length: DO_THROW(std::bad_array_new_length, ()); break;
     default: __TBB_ASSERT ( false, "Unknown exception ID" );
     }
     __TBB_ASSERT(false, "Unreachable code");
@@ -120,9 +124,9 @@ void handle_perror( int error_code, const char* what ) {
     }
     __TBB_ASSERT(buf_len <= BUF_SIZE && buf[buf_len] == 0, nullptr);
 #if TBB_USE_EXCEPTIONS
-    do_throw([&buf] { throw std::runtime_error(buf); });
+    do_throw([&buf] { throw std::runtime_error(buf); }, "std::runtime_error", buf);
 #else
-    PRINT_ERROR_AND_ABORT( "runtime_error", buf);
+    PRINT_ERROR_AND_ABORT( "std::runtime_error", buf);
 #endif /* !TBB_USE_EXCEPTIONS */
 }
 
@@ -158,7 +162,7 @@ bool gcc_rethrow_exception_broken() {
         is_broken = std::uncaught_exception();
     }
     if( is_broken ) fix_broken_rethrow();
-    __TBB_ASSERT( !std::uncaught_exception(), NULL );
+    __TBB_ASSERT( !std::uncaught_exception(), nullptr);
     return is_broken;
 }
 #else

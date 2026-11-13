@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2023 Intel Corporation
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -88,7 +88,7 @@ private:
 
     mutable std::atomic<size_t> myActiveBodyCnt;
     // output parameter for parallel_for body to report that max is reached
-    mutable bool                myReachedMax;
+    mutable std::atomic<bool>   myReachedMax;
     // zero timeout means no barrier is used during concurrency level detection
     const double                myTimeout;
     const size_t                myConcLevel;
@@ -96,7 +96,7 @@ private:
     static std::mutex global_mutex;
 
     ExactConcurrencyLevel(double timeout, size_t concLevel) :
-        myBarrier(NULL),
+        myBarrier(nullptr),
         myUniqueThreadsCnt(0), myReachedMax(false),
         myTimeout(timeout), myConcLevel(concLevel) {
         myActiveBodyCnt = 0;
@@ -112,7 +112,7 @@ private:
 public:
     void operator()(size_t) const {
         size_t v = ++myActiveBodyCnt;
-        CHECK_MESSAGE(v <= myConcLevel, "Number of active bodies is too high.");
+        REQUIRE_MESSAGE(v <= myConcLevel, "Number of active bodies is too high.");
         if (v == myConcLevel) // record that the max expected concurrency was observed
             myReachedMax = true;
         // try to get barrier when 1st time in the thread

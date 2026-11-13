@@ -1,7 +1,7 @@
 #!/bin/sh
 # shellcheck shell=sh
 #
-# Copyright (c) 2005-2021 Intel Corporation
+# Copyright (c) 2005-2025 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# The script is setting up environment for TBB.
+# The script is setting up environment for oneTBB.
 # Supported arguments:
 #   intel64|ia32 - architecture, intel64 is default.
 
@@ -139,50 +139,46 @@ fi
 TBBROOT=$(get_script_path "${vars_script_name:-}")/..
 
 TBB_TARGET_ARCH="intel64"
+TBB_ARCH_SUFFIX=""
 
-if [ ! -z "$SETVARS_ARGS" ] && [ "$SETVARS_CALL" "==" "1" ]; then
-    for arg in "$SETVARS_ARGS"; do
-        case "$arg" in
-        (intel64|ia32)
-            TBB_TARGET_ARCH="${arg}"
-            ;;
-        (*) ;;
-        esac
-    done
-elif [ ! -z "$SETVARS_ARGS" ]; then
-        for arg in "$SETVARS_ARGS"; do
-        case "$arg" in
-            (intel64|ia32)
-            TBB_TARGET_ARCH="${arg}"
-            ;;
-            (*)
-            >&2 echo "ERROR: Unknown argument $arg"
-            return 255 2>/dev/null || exit 255
-            ;;
-        esac
-    done
+if [ -n "${SETVARS_ARGS:-}" ]; then
+  tbb_arg_ia32="$(expr "${SETVARS_ARGS:-}" : '^.*\(ia32\)')" || true
+  if [ -n "${tbb_arg_ia32:-}" ]; then
+    TBB_TARGET_ARCH="ia32"
+  fi
 else
-    for arg do
-        case "$arg" in
-        (intel64|ia32)
-            TBB_TARGET_ARCH="${arg}"
-            ;;
-        (*) ;;
-        esac
-    done
+  for arg do
+    case "$arg" in
+    (intel64|ia32)
+      TBB_TARGET_ARCH="${arg}"
+      ;;
+    (*) ;;
+    esac
+  done
 fi
 
 TBB_LIB_NAME="libtbb.so.12"
-TBB_LIB_DIR="$TBB_TARGET_ARCH/gcc4.8"
 
-if [ -e "$TBBROOT/lib/$TBB_LIB_DIR/$TBB_LIB_NAME" ]; then
-    export TBBROOT
-
-    LIBRARY_PATH=$(prepend_path "${TBBROOT}/lib"/$TBB_LIB_DIR "${LIBRARY_PATH:-}") ; export LIBRARY_PATH
-    LD_LIBRARY_PATH=$(prepend_path "${TBBROOT}/lib/$TBB_LIB_DIR" "${LD_LIBRARY_PATH:-}") ; export LD_LIBRARY_PATH
-    CPATH=$(prepend_path "${TBBROOT}/include" "${CPATH:-}") ; export CPATH
-    CMAKE_PREFIX_PATH=$(prepend_path "${TBBROOT}" "${CMAKE_PREFIX_PATH:-}") ; export CMAKE_PREFIX_PATH
+# Parse layout
+if [ -e "$TBBROOT/lib/$TBB_TARGET_ARCH" ]; then
+  TBB_LIB_DIR="$TBB_TARGET_ARCH/gcc4.8"
 else
-    >&2 echo "ERROR: $TBB_LIB_NAME library does not exist in $TBBROOT/lib/$TBB_LIB_DIR."
-    return 255 2>/dev/null || exit 255
+  if [ "$TBB_TARGET_ARCH" = "ia32" ] ; then
+    TBB_ARCH_SUFFIX="32"
+  fi
+  TBB_LIB_DIR=""
+fi
+
+if [ -e "$TBBROOT/lib$TBB_ARCH_SUFFIX/$TBB_LIB_DIR/$TBB_LIB_NAME" ]; then
+  export TBBROOT
+
+  LIBRARY_PATH=$(prepend_path "${TBBROOT}/lib$TBB_ARCH_SUFFIX/$TBB_LIB_DIR" "${LIBRARY_PATH:-}") ; export LIBRARY_PATH
+  LD_LIBRARY_PATH=$(prepend_path "${TBBROOT}/lib$TBB_ARCH_SUFFIX/$TBB_LIB_DIR" "${LD_LIBRARY_PATH:-}") ; export LD_LIBRARY_PATH
+  C_INCLUDE_PATH=$(prepend_path "${TBBROOT}/include" "${C_INCLUDE_PATH:-}") ; export C_INCLUDE_PATH
+  CPLUS_INCLUDE_PATH=$(prepend_path "${TBBROOT}/include" "${CPLUS_INCLUDE_PATH:-}") ; export CPLUS_INCLUDE_PATH
+  CMAKE_PREFIX_PATH=$(prepend_path "${TBBROOT}" "${CMAKE_PREFIX_PATH:-}") ; export CMAKE_PREFIX_PATH
+  PKG_CONFIG_PATH=$(prepend_path "${TBBROOT}/lib$TBB_ARCH_SUFFIX/pkgconfig" "${PKG_CONFIG_PATH:-}") ; export PKG_CONFIG_PATH
+else
+  >&2 echo "ERROR: $TBB_LIB_NAME library does not exist in $TBBROOT/lib$TBB_ARCH_SUFFIX/$TBB_LIB_DIR."
+  return 255 2>/dev/null || exit 255
 fi

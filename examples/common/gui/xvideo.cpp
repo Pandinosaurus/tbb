@@ -1,5 +1,6 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2022 Intel Corporation
+    Copyright (c) 2026 UXL Foundation Contributors
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -56,8 +57,8 @@ static Pixmap pixmap = 0;
 static bool already_called_X_ShmAttach = false;
 static bool already_advised_about_NOSHMEM_workarounds = false;
 #endif
-static char *display_name = NULL;
-static Display *dpy = NULL;
+static char *display_name = nullptr;
+static Display *dpy = nullptr;
 static Screen *scrn;
 static Visual *vis;
 static Colormap cmap;
@@ -113,7 +114,7 @@ int xerr_handler(Display *dpy_, XErrorEvent *error) {
         fprintf(stderr, "Warning: Can't attach shared memory to display: %s (%d)\n", err, x_error);
         fprintf(
             stderr,
-            "If you are seeing a black output window, сheck if you have installed Xext library and rebuild project");
+            "If you are seeing a black output window, check if you have installed Xext library and rebuild project");
         already_advised_about_NOSHMEM_workarounds = true;
     }
 #else
@@ -181,7 +182,7 @@ bool video::init_window(int xsize, int ysize) {
         sh.flags = PSize | PMinSize | PMaxSize;
         sh.width = sh.min_width = sh.max_width = xsize;
         sh.height = sh.min_height = sh.max_height = ysize;
-        XSetStandardProperties(dpy, win, g_video->title, g_video->title, None, NULL, 0, &sh);
+        XSetStandardProperties(dpy, win, g_video->title, g_video->title, None, nullptr, 0, &sh);
         _XA_WM_DELETE_WINDOW = XInternAtom(dpy, "WM_DELETE_WINDOW", false);
         XSetWMProtocols(dpy, win, &_XA_WM_DELETE_WINDOW, 1);
         gc = XCreateGC(dpy, win, 0L, &xgcv);
@@ -206,7 +207,7 @@ bool video::init_window(int xsize, int ysize) {
             g_pImg = (unsigned int *)(shmseginfo.shmaddr = (char *)shmat(shmseginfo.shmid, 0, 0));
             if (g_pImg == (unsigned int *)-1) {
                 fprintf(stderr, "Warning: Can't attach to shared memory: %s\n", strerror(errno));
-                shmctl(shmseginfo.shmid, IPC_RMID, NULL);
+                shmctl(shmseginfo.shmid, IPC_RMID, nullptr);
                 goto generic;
             }
             shmseginfo.readOnly = false;
@@ -218,7 +219,7 @@ bool video::init_window(int xsize, int ysize) {
                         err,
                         x_error);
                 shmdt(shmseginfo.shmaddr);
-                shmctl(shmseginfo.shmid, IPC_RMID, NULL);
+                shmctl(shmseginfo.shmid, IPC_RMID, nullptr);
                 goto generic;
             }
             already_called_X_ShmAttach = true;
@@ -323,7 +324,7 @@ void video::terminate() {
             g_pImg = 0;
         }
         if (shmseginfo.shmid >= 0)
-            shmctl(shmseginfo.shmid, IPC_RMID, NULL);
+            shmctl(shmseginfo.shmid, IPC_RMID, nullptr);
 #endif
         if (gc)
             XFreeGC(dpy, gc);

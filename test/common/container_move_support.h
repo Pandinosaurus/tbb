@@ -1,5 +1,6 @@
 /*
     Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2026 UXL Foundation Contributors
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -25,6 +26,7 @@
 #include <algorithm>
 #include "custom_allocators.h"
 #include "state_trackable.h"
+#include "utils.h"
 
 namespace move_support_tests {
 
@@ -359,13 +361,13 @@ struct ArenaAllocatorFixture {
     using allocator_type = ArenaAllocator<T, POCMA>;
     using arena_data_type = typename allocator_type::arena_data_type;
 
-    std::vector<typename std::aligned_storage<sizeof(T)>::type> storage;
+    std::vector<utils::UninitializedStorage<T>> storage;
     arena_data_type arena_data;
     allocator_type allocator;
 
     ArenaAllocatorFixture( std::size_t size_to_allocate )
         : storage(size_to_allocate),
-          arena_data(reinterpret_cast<T*>(&storage.front()), storage.size()),
+          arena_data(&storage.front(), storage.size()),
           allocator(arena_data) {}
 
     ArenaAllocatorFixture( const ArenaAllocatorFixture& ) = delete;
@@ -427,7 +429,7 @@ struct MoveFixture {
     static constexpr std::size_t default_container_size = 100;
     const std::size_t container_size;
 
-    typename std::aligned_storage<sizeof(container_type)>::type source_storage;
+    utils::UninitializedStorage<container_type> source_storage;
     container_type& source;
 
     MemoryLocations locations;
@@ -754,6 +756,95 @@ void test_move_assignment_POCMA_false_unequal_allocator() {
     fixture.verify_content_deep_moved(dst);
 }
 
+template <typename Container>
+struct DestroyOnExit {
+    DestroyOnExit( Container& c ) : container(c) {}
+    DestroyOnExit( const DestroyOnExit& ) = delete;
+    ~DestroyOnExit() { container.~Container(); }
+
+    Container& container;
+};
+
+template <typename ContainerTraits>
+void test_move_assignment_to_non_empty_POCMA_true_stateful_allocator() {
+    using fixture_type = typename DefaultStatefulFixtureHelper<ContainerTraits, /*POCMA = */std::true_type>::type;
+    using container_type = typename fixture_type::container_type;
+    using init_iterator_type = typename ContainerTraits::init_iterator_type;
+
+    fixture_type fixture;
+
+    utils::UninitializedStorage<container_type> dst_storage;
+    container_type& dst = ContainerTraits::template construct_container<container_type>(
+        dst_storage, init_iterator_type(1000), init_iterator_type(1010), fixture.dst_allocator);
+    DestroyOnExit<container_type> dst_guard(dst);
+    dst = std::move(fixture.source);
+
+    fixture.verify_content_shallow_moved(dst);
+    fixture.verify_allocator_was_moved(dst.get_allocator());
+    fixture.verify_no_undestroyed_foo_left_and_dismiss();
+}
+
+template <typename ContainerTraits>
+void test_move_assignment_to_non_empty_POCMA_true_stateless_allocator() {
+    using allocator_type = std::allocator<FooWithAssign>;
+    using fixture_type = MoveFixture<ContainerTraits, allocator_type>;
+    using container_type = typename fixture_type::container_type;
+    using init_iterator_type = typename ContainerTraits::init_iterator_type;
+
+    TrackFooCount foo_count_tracker;
+    {
+        fixture_type fixture;
+
+        utils::UninitializedStorage<container_type> dst_storage;
+        container_type& dst = ContainerTraits::template construct_container<container_type>(
+            dst_storage, init_iterator_type(1000), init_iterator_type(1010));
+        DestroyOnExit<container_type> dst_guard(dst);
+        dst = std::move(fixture.source);
+
+        fixture.verify_content_shallow_moved(dst);
+    }
+    foo_count_tracker.verify_no_undestroyed_foo_left_and_dismiss();
+}
+
+template <typename ContainerTraits>
+void test_move_assignment_to_non_empty_POCMA_false_equal_allocator() {
+    using fixture_type = typename DefaultStatefulFixtureHelper<ContainerTraits, /*POCMA = */std::false_type>::type;
+    using container_type = typename fixture_type::container_type;
+    using init_iterator_type = typename ContainerTraits::init_iterator_type;
+
+    fixture_type fixture;
+    utils::UninitializedStorage<container_type> dst_storage;
+    container_type& dst = ContainerTraits::template construct_container<container_type>(
+        dst_storage, init_iterator_type(1000), init_iterator_type(1010), fixture.source_allocator);
+    DestroyOnExit<container_type> dst_guard(dst);
+    REQUIRE_MESSAGE(fixture.source.get_allocator() == dst.get_allocator(), "Incorrect test setup: allocators should be equal");
+
+    dst = std::move(fixture.source);
+
+    fixture.verify_content_shallow_moved(dst);
+    fixture.verify_no_undestroyed_foo_left_and_dismiss();
+}
+
+template <typename ContainerTraits>
+void test_move_assignment_to_non_empty_POCMA_false_unequal_allocator() {
+    using fixture_type = typename DefaultStatefulFixtureHelper<ContainerTraits, /*POCMA = */std::false_type>::type;
+    using container_type = typename fixture_type::container_type;
+    using init_iterator_type = typename ContainerTraits::init_iterator_type;
+
+    fixture_type fixture;
+
+    utils::UninitializedStorage<container_type> dst_storage;
+    container_type& dst = ContainerTraits::template construct_container<container_type>(
+        dst_storage, init_iterator_type(1000), init_iterator_type(1010), fixture.dst_allocator);
+    DestroyOnExit<container_type> dst_guard(dst);
+    dst = std::move(fixture.source);
+
+    fixture.verify_content_deep_moved(dst);
+    // The elements of the source are still alive as moved-from objects, so the copies in dst must go first.
+    dst.clear();
+    fixture.verify_no_undestroyed_foo_left_and_dismiss();
+}
+
 #define REQUIRE_THROW_EXCEPTION(expr, exception_type)            \
         try {                                                    \
             expr;                                                \
@@ -811,6 +902,10 @@ void test_move_assignment() {
     test_move_assignment_POCMA_true_stateless_allocator<ContainerTraits>();
     test_move_assignment_POCMA_false_equal_allocator<ContainerTraits>();
     test_move_assignment_POCMA_false_unequal_allocator<ContainerTraits>();
+    test_move_assignment_to_non_empty_POCMA_true_stateful_allocator<ContainerTraits>();
+    test_move_assignment_to_non_empty_POCMA_true_stateless_allocator<ContainerTraits>();
+    test_move_assignment_to_non_empty_POCMA_false_equal_allocator<ContainerTraits>();
+    test_move_assignment_to_non_empty_POCMA_false_unequal_allocator<ContainerTraits>();
 }
 
 template<typename container_traits>

@@ -1,5 +1,6 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2025 Intel Corporation
+    Copyright (c) 2026 UXL Foundation Contributors
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -13,6 +14,17 @@
     See the License for the specific language governing permissions and
     limitations under the License.
 */
+
+#include <tbb/version.h> // For __TBB_GLIBCXX_VERSION and __TBB_CPP20_PRESENT
+
+// Intel LLVM compiler triggers a deprecation warning in the implementation of std::allocator_traits::destroy
+// inside Standard Library while using STL PMR containers since std::polymorphic_allocator::destroy is deprecated since C++20
+#define TEST_LLVM_COMPILER_PMR_DESTROY_DEPRECATED_BROKEN __INTEL_LLVM_COMPILER >= 20250000 && __INTEL_LLVM_COMPILER <= 20260111 && __TBB_GLIBCXX_VERSION == 110000 && __TBB_CPP20_PRESENT
+
+#if TEST_LLVM_COMPILER_PMR_DESTROY_DEPRECATED_BROKEN
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
 
 #include "tbb/cache_aligned_allocator.h"
 #include "tbb/tbb_allocator.h"
@@ -41,7 +53,7 @@ TEST_CASE("Test cache_aligned_allocate throws") {
     // during address2 allocation.
     const size_t itemsize = 1024;
     const size_t nitems   = 1024;
-    void *address1 = NULL;
+    void *address1 = nullptr;
     try {
         address1 = cache_aligned_allocate(nitems * itemsize);
     } catch(...) {
@@ -66,6 +78,20 @@ TEST_CASE("Test cache_aligned_allocate throws") {
     } catch (...) {
         REQUIRE_MESSAGE(false, "cache_aligned_deallocate did not accept the address obtained with cache_aligned_allocate");
     }
+
+    exception_caught = false;
+    // Check handling the n + cache_line_size overflow
+    const size_t overflow_size = ~size_t(0) - cache_line_size() + 1;
+
+    try {
+        (void)cache_aligned_allocate(overflow_size);
+    } catch(std::bad_array_new_length&) {
+        exception_caught = true;
+    } catch(...) {
+        REQUIRE_MESSAGE(false, "Unexpected exception type in case of overflow");
+    }
+
+    REQUIRE_MESSAGE(exception_caught, "cache_aligned_allocate did not throw bad_array_new_length in case of overflow");
 }
 #endif /* TBB_USE_EXCEPTIONS */
 
@@ -100,3 +126,6 @@ TEST_CASE("polymorphic_allocator test") {
 }
 #endif
 
+#if TEST_LLVM_COMPILER_PMR_DESTROY_DEPRECATED_BROKEN
+#pragma clang diagnostic pop // "-Wdeprecated-declarations"
+#endif

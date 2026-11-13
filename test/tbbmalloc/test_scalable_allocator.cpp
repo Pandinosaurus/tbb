@@ -1,5 +1,6 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2022 Intel Corporation
+    Copyright (c) 2026 UXL Foundation Contributors
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -22,17 +23,19 @@
 
 #define __TBB_NO_IMPLICIT_LINKAGE 1
 
-#if _WIN32 || _WIN64
+#if !defined(_CRT_SECURE_NO_WARNINGS) && (_WIN32 || _WIN64)
 #define _CRT_SECURE_NO_WARNINGS
 #endif
+
+#define __TBB_EXTRA_DEBUG 1 // enables additional checks
+#define TBB_PREVIEW_MEMORY_POOL 1
+#define HARNESS_TBBMALLOC_THREAD_SHUTDOWN 1
 
 #include "common/test.h"
 #include "common/utils.h"
 #include "common/utils_assert.h"
 #include "common/custom_allocators.h"
 
-#define __TBB_EXTRA_DEBUG 1 // enables additional checks
-#define TBB_PREVIEW_MEMORY_POOL 1
 
 #include "tbb/memory_pool.h"
 #include "tbb/scalable_allocator.h"
@@ -41,7 +44,6 @@
 #include "common/allocator_test_common.h"
 #include "common/allocator_stl_test_common.h"
 
-#define HARNESS_TBBMALLOC_THREAD_SHUTDOWN 1
 // #include "harness_allocator.h"
 
 #if _MSC_VER
@@ -87,7 +89,7 @@ public:
     NullAllocator() { }
     NullAllocator(const NullAllocator&) { }
     ~NullAllocator() { }
-    void *allocate(size_t) { return NULL; }
+    void *allocate(size_t) { return nullptr; }
     void deallocate(void *, size_t) { REQUIRE(false); }
 };
 
@@ -109,11 +111,11 @@ struct FixedPool {
 static void *fixedBufGetMem(intptr_t pool_id, size_t &bytes)
 {
     if (((FixedPool*)pool_id)->used)
-        return NULL;
+        return nullptr;
 
     ((FixedPool*)pool_id)->used = true;
     bytes = ((FixedPool*)pool_id)->size;
-    return bytes? ((FixedPool*)pool_id)->buf : NULL;
+    return bytes? ((FixedPool*)pool_id)->buf : nullptr;
 }
 #endif
 
@@ -144,7 +146,7 @@ void TestSmallFixedSizePool()
    on creation failure. Instead test same functionality via low-level interface.
    TODO: add support for configuration with disabled exceptions to pools.
 */
-        rml::MemPoolPolicy pol(fixedBufGetMem, NULL, 0, /*fixedSizePool=*/true,
+        rml::MemPoolPolicy pol(fixedBufGetMem, nullptr, 0, /*fixedSizePool=*/true,
                                /*keepMemTillDestroy=*/false);
         rml::MemoryPool *pool;
         FixedPool fixedPool(buf, sz);
@@ -162,7 +164,7 @@ void TestSmallFixedSizePool()
     REQUIRE_MESSAGE(allocated, "Maximal buf size should be enough to create working fixed_pool");
 #if TBB_USE_EXCEPTIONS
     try {
-        tbb::fixed_pool pool(NULL, 10*1024*1024);
+        tbb::fixed_pool pool(nullptr, 10*1024*1024);
         REQUIRE_MESSAGE(false, "Useless allocator with no memory must not be created");
     } catch (std::invalid_argument&) {
     } catch (...) {
@@ -230,9 +232,18 @@ TEST_CASE("Allocator concept") {
 
         TestAllocator(Concept, nestedAllocator);
     }
+    tbb::memory_pool<tbb::scalable_allocator<int>> mpool;
+
+    tbb::memory_pool_allocator<int> mpalloc(mpool);
+
+    TestAllocator<tbb::memory_pool_allocator<int>>(Concept, mpalloc);
+    TestAllocator<tbb::memory_pool_allocator<void>>(Concept, mpalloc);
 
     // operator==
     TestAllocator<tbb::scalable_allocator<void>>(Comparison);
+    TestAllocator<tbb::memory_pool_allocator<void>>(Comparison, tbb::memory_pool_allocator<void>(mpool));
+    TestAllocator<tbb::memory_pool_allocator<int>>(Comparison, mpalloc);
+    TestAllocator<tbb::memory_pool_allocator<void>>(Comparison, mpalloc);
 }
 
 #if TBB_USE_EXCEPTIONS
@@ -240,6 +251,9 @@ TEST_CASE("Allocator concept") {
 //! \brief \ref requirement
 TEST_CASE("Exceptions") {
     TestAllocator<tbb::scalable_allocator<void>>(Exceptions);
+
+    tbb::memory_pool<tbb::scalable_allocator<int>> pool;
+    TestAllocator(Exceptions, tbb::memory_pool_allocator<void>(pool));
 }
 #endif /* TBB_USE_EXCEPTIONS */
 
@@ -260,6 +274,18 @@ TEST_CASE("Small fixed pool") {
 TEST_CASE("Zero space pool") {
     TestZeroSpaceMemoryPool();
 }
+
+#if TBB_ALLOCATOR_TRAITS_BROKEN
+//! Testing allocator traits is broken
+//! \brief \ref error_guessing
+TEST_CASE("Broken allocator concept") {
+    TestAllocator<tbb::scalable_allocator<void>>(Broken);
+    
+    tbb::memory_pool<tbb::scalable_allocator<int>> mpool; 
+    TestAllocator<tbb::memory_pool_allocator<void>>(Broken, tbb::memory_pool_allocator<void>(mpool));
+}
+#endif
+
 
 //! Testing allocators compatibility with STL containers
 //! \brief \ref interface

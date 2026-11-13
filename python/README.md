@@ -13,14 +13,14 @@ parallelized using Intel&reg; oneAPI Math Kernel Library or/and oneTBB.
 The module implements Pool class with the standard interface using oneTBB which can be used to replace Python's ThreadPool.
 Thanks to the monkey-patching technique implemented in class Monkey, no source code change is needed in order to enable threading composability in Python programs.
 
-For more information and examples, please refer to [online blog](http://software.intel.com/en-us/blogs/2016/04/04unleash-parallel-performance-of-python-programs).
+For more information and examples, please refer to [forum discussion](https://community.intel.com/t5/Intel-Distribution-for-Python/TBB-module-Unleash-parallel-performance-of-Python-programs/m-p/1074459).
 
 ## Directories
  - **rml** - The folder contains sources for building the plugin with cross-process dynamic thread scheduler implementation.
  - **tbb** - The folder contains Python module sources.
 
 ## Files
- - **setup.py** - Standard Python setup script.
+ - **setup.py** - Standard Python setuptools script. Calling it directly is deprecated since setuptools version 58.3.0.
  - **TBB.py** - Alternative entry point for Python module.
 
 ## CMake predefined targets
@@ -33,8 +33,7 @@ For more information and examples, please refer to [online blog](http://software
  - `pydoc tbb` - Read built-in documentation for Python interfaces.
  - `python3 -m tbb your_script.py` - Run your_script.py in context of `with tbb.Monkey():` when oneTBB is enabled. By default only multi-threading will be covered.
  - `python3 -m tbb --ipc your_script.py` - Run your_script.py in context of `with tbb.Monkey():` when oneTBB enabled in both multi-threading and multi-processing modes.
- - `python3 setup.py build -b<output_directory_path> -f check` - Build oneTBB module for Python. (Prerequisites: built and sourced oneTBB and IRML libraries)
- - `python3 setup.py build -b<output_directory_path> build_ext -I<path_to_tbb_includes> -L<path_to_prebuilt_libraries> install -f <additional_flags> ` - Build and install oneTBB module for Python. (Prerequisites: built oneTBB and IRML libraries)
+ - `TBB_INCLUDEDIRS=<path_to_tbb_includes> TBB_LIBDIRS=<path_to_prebuilt_libraries> python3 -m pip install --no-build-isolation --prefix <output_directory_path>` - Build and install oneTBB module for Python. (Prerequisites: built oneTBB and IRML libraries)
  - `python3 -m TBB test` - run test for oneTBB module for Python.
  - `python3 -m tbb test` - run test for oneTBB module for Python.
 

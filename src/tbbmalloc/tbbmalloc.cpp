@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2023 Intel Corporation
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@
 
 #include "../tbb/assert_impl.h" // Out-of-line TBB assertion handling routines are instantiated here.
 #include "oneapi/tbb/version.h"
+#include "oneapi/tbb/scalable_allocator.h"
 
 #undef UNICODE
 
@@ -41,10 +42,10 @@ namespace internal {
 #if _WIN32||_WIN64
 #define MALLOCLIB_NAME "tbbmalloc" DEBUG_SUFFIX ".dll"
 #elif __APPLE__
-#define MALLOCLIB_NAME "libtbbmalloc" DEBUG_SUFFIX ".dylib"
+#define MALLOCLIB_NAME "libtbbmalloc" DEBUG_SUFFIX ".2.dylib"
 #elif __FreeBSD__ || __NetBSD__ || __OpenBSD__ || __sun || _AIX || __ANDROID__
 #define MALLOCLIB_NAME "libtbbmalloc" DEBUG_SUFFIX ".so"
-#elif __linux__
+#elif __unix__
 #define MALLOCLIB_NAME "libtbbmalloc" DEBUG_SUFFIX  __TBB_STRING(.so.2)
 #else
 #error Unknown OS
@@ -66,6 +67,7 @@ void init_tbbmalloc() {
                                  |GET_MODULE_HANDLE_EX_FLAG_PIN,
                                  (LPCTSTR)&scalable_malloc, &lib);
     MALLOC_ASSERT(lib && ret, "Allocator can't find itself.");
+    tbb::detail::suppress_unused_warning(ret);
     SetErrorMode (prev_mode);
 #endif /* USE_PTHREAD && !__TBB_SOURCE_DIRECTLY_INCLUDED */
 }
@@ -80,14 +82,13 @@ extern "C" BOOL WINAPI DllMain( HINSTANCE /*hInst*/, DWORD callReason, LPVOID lp
     }
     else if (callReason==DLL_PROCESS_DETACH)
     {
-        __TBB_mallocProcessShutdownNotification(lpvReserved != NULL);
+        __TBB_mallocProcessShutdownNotification(lpvReserved != nullptr);
     }
     return TRUE;
 }
 #else /* !USE_WINTHREAD */
 struct RegisterProcessShutdownNotification {
 // Work around non-reentrancy in dlopen() on Android
-#if !__TBB_USE_DLOPEN_REENTRANCY_WORKAROUND
     RegisterProcessShutdownNotification() {
         // prevents unloading, POSIX case
 
@@ -97,7 +98,10 @@ struct RegisterProcessShutdownNotification {
         // MALLOC_ASSERT(ret, "Allocator can't load itself.");
         dlopen(MALLOCLIB_NAME, RTLD_NOW);
     }
-#endif /* !__TBB_USE_DLOPEN_REENTRANCY_WORKAROUND */
+
+    RegisterProcessShutdownNotification(RegisterProcessShutdownNotification&) = delete;
+    RegisterProcessShutdownNotification& operator=(const RegisterProcessShutdownNotification&) = delete;
+
     ~RegisterProcessShutdownNotification() {
         __TBB_mallocProcessShutdownNotification(false);
     }

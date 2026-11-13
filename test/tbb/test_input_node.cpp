@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2024 Intel Corporation
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -30,8 +30,8 @@
 //! \brief Test for [flow_graph.input_node] specification
 
 
-using tbb::detail::d1::graph_task;
-using tbb::detail::d1::SUCCESSFULLY_ENQUEUED;
+using tbb::detail::d2::graph_task;
+using tbb::detail::d2::SUCCESSFULLY_ENQUEUED;
 
 const int N = 1000;
 
@@ -61,6 +61,12 @@ public:
         return const_cast<graph_task*>(SUCCESSFULLY_ENQUEUED);
     }
 
+#if __TBB_PREVIEW_FLOW_GRAPH_TRY_PUT_AND_WAIT
+    graph_task* try_put_task( const T& v, const tbb::detail::d2::message_metainfo& ) override {
+        return try_put_task(v);
+    }
+#endif
+
     tbb::flow::graph& graph_reference() const override {
         return my_graph;
     }
@@ -74,7 +80,7 @@ class my_input_body {
 
 public:
 
-    my_input_body() : ninvocations(NULL) { my_count = 0; }
+    my_input_body() : ninvocations(nullptr) { my_count = 0; }
     my_input_body(int &_inv) : ninvocations(&_inv)  { my_count = 0; }
 
     T operator()( tbb::flow_control& fc ) {
@@ -254,47 +260,6 @@ void test_reset() {
     }
 }
 
-#if __TBB_CPP17_DEDUCTION_GUIDES_PRESENT
-int input_body_f(tbb::flow_control&) { return 42; }
-
-void test_deduction_guides() {
-    using namespace tbb::flow;
-    graph g;
-
-    auto lambda = [](tbb::flow_control&) { return 42; };
-    auto non_const_lambda = [](tbb::flow_control&) mutable { return 42; };
-
-    // Tests for input_node(graph&, Body)
-    input_node s1(g, lambda);
-    static_assert(std::is_same_v<decltype(s1), input_node<int>>);
-
-    input_node s2(g, non_const_lambda);
-    static_assert(std::is_same_v<decltype(s2), input_node<int>>);
-
-    input_node s3(g, input_body_f);
-    static_assert(std::is_same_v<decltype(s3), input_node<int>>);
-
-    input_node s4(s3);
-    static_assert(std::is_same_v<decltype(s4), input_node<int>>);
-
-#if __TBB_PREVIEW_FLOW_GRAPH_NODE_SET
-    broadcast_node<int> bc(g);
-
-    // Tests for input_node(const node_set<Args...>&, Body)
-    input_node s5(precedes(bc), lambda);
-    static_assert(std::is_same_v<decltype(s5), input_node<int>>);
-
-    input_node s6(precedes(bc), non_const_lambda);
-    static_assert(std::is_same_v<decltype(s6), input_node<int>>);
-
-    input_node s7(precedes(bc), input_body_f);
-    static_assert(std::is_same_v<decltype(s7), input_node<int>>);
-#endif
-    g.wait_for_all();
-}
-
-#endif // __TBB_CPP17_DEDUCTION_GUIDES_PRESENT
-
 #if __TBB_PREVIEW_FLOW_GRAPH_NODE_SET
 #include <array>
 void test_follows_and_precedes_api() {
@@ -355,14 +320,6 @@ TEST_CASE("Reset test"){
 //! \brief \ref error_guessing
 TEST_CASE("Follows and precedes API"){
     test_follows_and_precedes_api();
-}
-#endif
-
-#if __TBB_CPP17_DEDUCTION_GUIDES_PRESENT
-//! Test deduction guides
-//! \brief \ref requirement
-TEST_CASE("Deduction guides"){
-    test_deduction_guides();
 }
 #endif
 

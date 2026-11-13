@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2022 Intel Corporation
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -143,8 +143,8 @@ class input_buffer {
     //! True for ordered filter, false otherwise.
     const bool is_ordered;
 
-    //! for parallel filters that accepts NULLs, thread-local flag for reaching end_of_input
-    using end_of_input_tls_t = basic_tls<std::intptr_t>;
+    //! for parallel filters that accepts nullptrs, thread-local flag for reaching end_of_input
+    using end_of_input_tls_t = basic_tls<input_buffer*>;
     end_of_input_tls_t end_of_input_tls;
     bool end_of_input_tls_allocated; // no way to test pthread creation of TLS
 
@@ -240,10 +240,10 @@ public:
             handle_perror(status, "Failed to destroy filter TLS");
     }
     bool my_tls_end_of_input() {
-        return end_of_input_tls.get() != 0;
+        return end_of_input_tls.get() != nullptr;
     }
     void set_my_tls_end_of_input() {
-        end_of_input_tls.set(1);
+        end_of_input_tls.set(this);
     }
 };
 
@@ -331,7 +331,7 @@ public:
         return nullptr;
     }
 
-    ~stage_task() {
+    ~stage_task() override {
         if ( my_filter && my_object ) {
             my_filter->finalize(my_object);
             my_object = nullptr;

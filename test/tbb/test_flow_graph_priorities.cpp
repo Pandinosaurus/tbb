@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2018-2021 Intel Corporation
+    Copyright (c) 2018-2024 Intel Corporation
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -256,7 +256,7 @@ struct AsyncActivity {
     typedef async_node_type::gateway_type gateway_type;
 
     struct work_type { data_type input; gateway_type* gateway; };
-    bool done;
+    std::atomic<bool> done;
     concurrent_queue<work_type> my_queue;
     std::thread my_service_thread;
 
@@ -332,7 +332,11 @@ struct DeciderBody {
 
 struct AsyncSubmissionBody {
     AsyncActivity* my_activity;
-    void operator()(data_type input, async_node_type::gateway_type& gateway) {
+    // It is important that async_node in the test executes without spawning a TBB task, because
+    // it passes the work to asynchronous thread, which unlocks the barrier that is waited
+    // by every execution thread (asynchronous thread and any TBB worker or main thread).
+    // This is why async_node's body marked noexcept.
+    void operator()(data_type input, async_node_type::gateway_type& gateway) noexcept {
         my_activity->submit(input, &gateway);
     }
     AsyncSubmissionBody(AsyncActivity* activity) : my_activity(activity) {}
@@ -411,7 +415,7 @@ struct execution_tracker_t {
         prioritized_work_interrupted = false;
     }
     std::thread::id prioritized_work_submitter;
-    bool prioritized_work_started;
+    std::atomic<bool> prioritized_work_started;
     bool prioritized_work_finished;
     bool prioritized_work_interrupted;
 } exec_tracker;
@@ -445,7 +449,7 @@ void do_node_work(int work_size) {
 template<work_type_t>
 void do_nested_work( const std::thread::id& tid, const tbb::blocked_range<int>& /*subrange*/ ) {
     // This is non-prioritized work...
-    if( exec_tracker.prioritized_work_submitter != tid )
+    if( !exec_tracker.prioritized_work_started || exec_tracker.prioritized_work_submitter != tid )
         return;
     // ...being executed by the thread that initially started prioritized one...
     CHECK_MESSAGE( exec_tracker.prioritized_work_started,
@@ -477,7 +481,7 @@ void do_node_work<PRIORITIZED_WORK>(int work_size) {
 template<>
 void do_nested_work<PRIORITIZED_WORK>( const std::thread::id& tid,
                                        const tbb::blocked_range<int>& /*subrange*/ ) {
-    if( exec_tracker.prioritized_work_submitter == tid ) {
+    if( exec_tracker.prioritized_work_started && exec_tracker.prioritized_work_submitter == tid ) {
         CHECK_MESSAGE( !exec_tracker.prioritized_work_interrupted,
                        "Thread was not fully devoted to processing of prioritized task." );
     } else {
@@ -587,7 +591,7 @@ void execute_outer_graph( bool same_arena, task_arena& inner_arena, int max_thre
 
     auto threads_range = utils::concurrency_range(max_threads);
     for( auto num_threads : threads_range ) {
-        inner_arena.initialize( num_threads );
+        inner_arena.initialize( static_cast<int>(num_threads) );
         start_node.try_put( 42 );
         outer_graph.wait_for_all();
         inner_arena.terminate();
@@ -601,7 +605,7 @@ void test_in_arena( int max_threads, task_arena& outer_arena, task_arena& inner_
     for( auto num_threads : threads_range ) {
         INFO( "Testing nested nodes with specified priority in " << (same_arena? "same" : "different")
               << " arenas, num_threads=" << num_threads << ") - " );
-        outer_arena.initialize( num_threads );
+        outer_arena.initialize( static_cast<int>(num_threads) );
         outer_arena.execute( [&outer_graph]{ outer_graph.reset(); } );
         execute_outer_graph( same_arena, inner_arena, max_threads, outer_graph, start_node );
         outer_arena.terminate();
@@ -834,23 +838,25 @@ namespace Exceptions {
 //! \brief \ref requirement
 TEST_CASE("Priority nodes take precedence"){
     for( auto p : utils::concurrency_range() ) {
-        PriorityNodesTakePrecedence::test( p );
+        PriorityNodesTakePrecedence::test( static_cast<int>(p) );
     }
 }
 
+#if !EMSCRIPTEN
 //! Test thread eager reaction
 //! \brief \ref error_guessing
 TEST_CASE("Thread eager reaction"){
     for( auto p : utils::concurrency_range() ) {
-        ThreadsEagerReaction::test( p );
+        ThreadsEagerReaction::test( static_cast<int>(p) );
     }
 }
+#endif
 
 //! Test prioritization under concurrency limits
 //! \brief \ref error_guessing
 TEST_CASE("Limiting execution to prioritized work") {
     for( auto p : utils::concurrency_range() ) {
-        LimitingExecutionToPriorityTask::test( p );
+        LimitingExecutionToPriorityTask::test( static_cast<int>(p) );
     }
 }
 
@@ -859,7 +865,7 @@ TEST_CASE("Limiting execution to prioritized work") {
 TEST_CASE("Nested test case") {
     std::size_t max_threads = utils::get_platform_max_threads();
     // The stepping for the threads is done inside.
-    NestedCase::test( max_threads );
+    NestedCase::test( static_cast<int>(max_threads) );
 }
 
 //! Test bypassed task with higher priority
@@ -873,7 +879,7 @@ TEST_CASE("Bypass prioritized task"){
 //! \brief \ref error_guessing
 TEST_CASE("Many successors") {
     for( auto p : utils::concurrency_range() ) {
-        ManySuccessors::test( p );
+        ManySuccessors::test( static_cast<int>(p) );
     }
 }
 
@@ -884,3 +890,4 @@ TEST_CASE("Exceptions") {
     Exceptions::test();
 }
 #endif
+

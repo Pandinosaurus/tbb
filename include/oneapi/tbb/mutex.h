@@ -1,5 +1,6 @@
 /*
-    Copyright (c) 2021 Intel Corporation
+    Copyright (c) 2021-2023 Intel Corporation
+    Copyright (c) 2026 UXL Foundation Contributors
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -16,8 +17,6 @@
 
 #ifndef __TBB_mutex_H
 #define __TBB_mutex_H
-
-#if __TBB_PREVIEW_MUTEXES
 
 #include "detail/_namespace_injection.h"
 #include "detail/_utils.h"
@@ -38,9 +37,7 @@ public:
     };
 
     //! Destructor
-    ~mutex() {
-        __TBB_ASSERT(!my_flag.load(std::memory_order_relaxed), "destruction of an acquired mutex");
-    }
+    ~mutex() = default;
 
     //! No Copy
     mutex(const mutex&) = delete;
@@ -65,7 +62,7 @@ public:
     //! Try acquiring lock (non-blocking)
     /** Return true if lock acquired; false otherwise. */
     bool try_lock() {
-        bool result = !my_flag.exchange(true);
+        bool result = !my_flag.load(std::memory_order_relaxed) && !my_flag.exchange(true);
         if (result) {
             call_itt_notify(acquired, this);
         }
@@ -78,6 +75,11 @@ public:
         // We need Write Read memory barrier before notify that reads the waiter list.
         // In C++ only full fence covers this type of barrier.
         my_flag.exchange(false);
+#if !(__TBB_x86_64 || __TBB_x86_32)
+        // RMW on x86 works as a full fence,
+        // but on other platforms we need to issue a seq_cst fence explicitly
+        atomic_fence_seq_cst();
+#endif
         my_flag.notify_one_relaxed();
     }
 
@@ -93,7 +95,5 @@ using detail::d1::mutex;
 } // namespace v1
 
 } // namespace tbb
-
-#endif /* __TBB_PREVIEW_MUTEXES */
 
 #endif // __TBB_mutex_H

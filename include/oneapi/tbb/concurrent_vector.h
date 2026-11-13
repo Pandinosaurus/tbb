@@ -1,5 +1,6 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2024 Intel Corporation
+    Copyright (c) 2026 UXL Foundation Contributors
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -221,7 +222,7 @@ bool operator<=( const vector_iterator<Vector, T>& i, const vector_iterator<Vect
     return !(j < i);
 }
 
-static constexpr std::size_t embedded_table_num_segments = 3;
+__TBB_GLOBAL_VAR constexpr std::size_t embedded_table_num_segments = 3;
 
 template <typename T, typename Allocator = tbb::cache_aligned_allocator<T>>
 class concurrent_vector
@@ -593,7 +594,7 @@ private:
 
             segment_type disabled_segment = nullptr;
             if (table[0].compare_exchange_strong(disabled_segment, new_segment)) {
-                this->extend_table_if_necessary(table, 0, first_block_size);
+                this->extend_table_if_necessary(table, /*start_index*/0, /*end_index*/first_block_size);
                 for (size_type i = 1; i < first_block; ++i) {
                     table[i].store(new_segment, std::memory_order_release);
                 }
@@ -642,6 +643,21 @@ private:
             }
             return curr_segment_base * 2 > curr_vector_size ? curr_vector_size - curr_segment_base : curr_segment_base;
         }
+    }
+
+    segment_type nullify_segment( segment_table_type table, size_type segment_index ) {
+        segment_type target_segment = table[segment_index].load(std::memory_order_relaxed);
+        if (segment_index >= this->my_first_block) {
+            table[segment_index].store(nullptr, std::memory_order_relaxed);
+        } else {
+            if (segment_index == 0) {
+                for (size_type i = 0; i < this->my_first_block; ++i) {
+                    table[i].store(nullptr, std::memory_order_relaxed);
+                }
+            }
+        }
+
+        return target_segment;
     }
 
     void deallocate_segment( segment_type address, segment_index_type seg_index ) {
@@ -811,8 +827,8 @@ private:
 
     template <typename... Args>
     iterator internal_grow( size_type start_idx, size_type end_idx, const Args&... args ) {
-        this->assign_first_block_if_necessary(this->segment_index_of(end_idx - 1) + 1);
         size_type seg_index = this->segment_index_of(end_idx - 1);
+        this->assign_first_block_if_necessary(seg_index + 1);
         segment_table_type table = this->get_table();
         this->extend_table_if_necessary(table, start_idx, end_idx);
 
@@ -877,7 +893,7 @@ private:
 
     #if TBB_USE_DEBUG
         size_type cap = capacity();
-        __TBB_ASSERT( cap >= new_size, NULL);
+        __TBB_ASSERT( cap >= new_size, nullptr);
     #endif
         return iterator(*this, size());
     }
@@ -1016,7 +1032,7 @@ private:
                     this->delete_segment(seg_idx - 1);
                 }
             }
-            if (!k) this->my_first_block.store(0, std::memory_order_relaxed);;
+            if (!k) this->my_first_block.store(0, std::memory_order_relaxed);
         }
     }
 

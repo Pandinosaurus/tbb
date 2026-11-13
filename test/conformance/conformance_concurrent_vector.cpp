@@ -1,5 +1,6 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2023 Intel Corporation
+    Copyright (c) 2026 UXL Foundation Contributors
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -535,6 +536,12 @@ void verify_assignment_operator_throws_bad_last_alloc(vector_t & victim){
     //CHECK_THROWS_AS(victim = copy_of_victim, oneapi::tbb::bad_last_alloc); //TODO exceptions support
 }
 
+#if _MSC_VER
+#pragma warning (push)
+// Forcing value to bool 'true' or 'false'
+#pragma warning (disable: 4800)
+#endif //#if _MSC_VER
+
 //TODO: split into two separate tests
 //TODO: remove code duplication in exception safety tests
 void test_ex_assign_operator(){
@@ -572,6 +579,10 @@ void test_ex_assign_operator(){
     }
 }
 
+#if _MSC_VER
+#pragma warning (pop)
+#endif
+
 template<typename T>
 void AssertSameType( const T& /*x*/, const T& /*y*/ ) {}
 
@@ -586,10 +597,10 @@ struct test_grow_by {
 
 template<typename Iterator, typename T>
 void TestIteratorTraits() {
-    AssertSameType( static_cast<typename Iterator::difference_type*>(0), static_cast<std::ptrdiff_t*>(0) );
-    AssertSameType( static_cast<typename Iterator::value_type*>(0), static_cast<T*>(0) );
-    AssertSameType( static_cast<typename Iterator::pointer*>(0), static_cast<T**>(0) );
-    AssertSameType( static_cast<typename Iterator::iterator_category*>(0), static_cast<std::random_access_iterator_tag*>(0) );
+    AssertSameType( static_cast<typename Iterator::difference_type*>(nullptr), static_cast<std::ptrdiff_t*>(nullptr) );
+    AssertSameType( static_cast<typename Iterator::value_type*>(nullptr), static_cast<T*>(nullptr) );
+    AssertSameType( static_cast<typename Iterator::pointer*>(nullptr), static_cast<T**>(nullptr) );
+    AssertSameType( static_cast<typename Iterator::iterator_category*>(nullptr), static_cast<std::random_access_iterator_tag*>(nullptr) );
     T x;
     typename Iterator::reference xr = x;
     typename Iterator::pointer xp = &x;
@@ -638,15 +649,15 @@ void TestSerialMoveInShrinkToFit(){
 
 struct default_container_traits {
     template <typename container_type, typename iterator_type>
-    static container_type& construct_container(typename std::aligned_storage<sizeof(container_type)>::type& storage, iterator_type begin, iterator_type end){
-        container_type* ptr = reinterpret_cast<container_type*>(&storage);
+    static container_type& construct_container(utils::UninitializedStorage<container_type>& storage, iterator_type begin, iterator_type end){
+        container_type* ptr = &storage;
         new (ptr) container_type(begin, end);
         return *ptr;
     }
 
     template <typename container_type, typename iterator_type, typename allocator_type>
-    static container_type& construct_container(typename std::aligned_storage<sizeof(container_type)>::type& storage, iterator_type begin, iterator_type end, allocator_type const& a){
-        container_type* ptr = reinterpret_cast<container_type*>(&storage);
+    static container_type& construct_container(utils::UninitializedStorage<container_type>& storage, iterator_type begin, iterator_type end, allocator_type const& a){
+        container_type* ptr = &storage;
         new (ptr) container_type(begin, end, a);
         return *ptr;
     }
@@ -896,7 +907,7 @@ public:
 
             if (!items_left_to_add[method_index]) {
                 struct not_zero{
-                    static bool is(std::size_t items_to_add){ return items_to_add;}
+                    static bool is(std::size_t items_to_add){ return items_to_add != 0;}
                 };
                 method_index = std::distance(items_left_to_add.begin(), std::find_if(items_left_to_add.begin(), items_left_to_add.end(), &not_zero::is));
                 REQUIRE_MESSAGE(method_index < my_grain_map.distributed.size(), "incorrect test setup - wrong expected distribution: left free space but no elements to add?");
@@ -980,7 +991,7 @@ void TestConcurrentGrowBy() {
         REQUIRE( v.size() == std::size_t(range_size) );
 
         // Verify that v is a permutation of 0..m
-        size_t inversions = 0, direct_inits = 0, def_inits = 0, copy_inits = 0, move_inits = 0;
+        size_t direct_inits = 0, def_inits = 0, copy_inits = 0, move_inits = 0;
         std::vector<bool> found(range_size, 0);
         for( std::size_t i=0; i<range_size; ++i ) {
             if( v[i].state == move_support_tests::Foo::DefaultInitialized ) ++def_inits;
@@ -993,8 +1004,6 @@ void TestConcurrentGrowBy() {
             intptr_t index = v[i].bar();
             REQUIRE( !found[index] );
             found[index] = true;
-            if( i>0 )
-                inversions += v[i].bar()<v[i-1].bar();
         }
 
         std::size_t expected_direct_inits = 0, expected_def_inits = 0, expected_copy_inits = 0, expected_move_inits = 0;
@@ -1216,7 +1225,7 @@ void TestDeductionGuides() {
     TVector v1(v.begin(), v.end());
     static_assert(std::is_same<decltype(v1), TVector<ComplexType>>::value);
 
-    // check TVector(InputIterator, InputIterator, Alocator)
+    // check TVector(InputIterator, InputIterator, Allocator)
     TVector v2(v.begin(), v.end(), std::allocator<ComplexType>());
     static_assert(std::is_same<decltype(v2),
        TVector<ComplexType, std::allocator<ComplexType>>>::value);
@@ -1226,7 +1235,7 @@ void TestDeductionGuides() {
     static_assert(std::is_same<decltype(v3),
         TVector<ComplexType>>::value);
 
-    // check TVector(std::initializer_list, Alocator)
+    // check TVector(std::initializer_list, Allocator)
     TVector v4(l, std::allocator<ComplexType>());
     static_assert(std::is_same<decltype(v4), TVector<ComplexType, std::allocator<ComplexType>>>::value);
 

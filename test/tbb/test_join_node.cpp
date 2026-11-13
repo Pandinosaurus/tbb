@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2024 Intel Corporation
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -14,14 +14,18 @@
     limitations under the License.
 */
 
+#ifdef TBB_TEST_LOW_WORKLOAD
+    #undef MAX_TUPLE_TEST_SIZE
+    #define MAX_TUPLE_TEST_SIZE 3
+#endif
+
 #include "common/config.h"
 
 #include "test_join_node.h"
-
+#include "common/test_join_node_multiple_predecessors.h"
 
 //! \file test_join_node.cpp
 //! \brief Test for [flow_graph.join_node] specification
-
 
 static std::atomic<int> output_count;
 
@@ -52,7 +56,7 @@ public:
         input_node_helper<N, JType>::print_remark("Recirculation test of tag-matching join");
         INFO(" >\n");
         for(int maxTag = 1; maxTag <10; maxTag *= 3) {
-            for(int i = 0; i < N; ++i) all_input_nodes[i][0] = NULL;
+            for(int i = 0; i < N; ++i) all_input_nodes[i][0] = nullptr;
 
             tbb::flow::graph g;
             // this is the tag-matching join we're testing
@@ -118,185 +122,6 @@ public:
     }
 };
 
-#if __TBB_PREVIEW_FLOW_GRAPH_NODE_SET
-#include <array>
-#include <vector>
-void test_follows_and_precedes_api() {
-    using msg_t = tbb::flow::continue_msg;
-    using JoinOutputType = std::tuple<msg_t, msg_t, msg_t>;
-
-    std::array<msg_t, 3> messages_for_follows = { {msg_t(), msg_t(), msg_t()} };
-    std::vector<msg_t> messages_for_precedes = {msg_t(), msg_t(), msg_t()};
-
-    follows_and_precedes_testing::test_follows
-        <msg_t, tbb::flow::join_node<JoinOutputType>, tbb::flow::buffer_node<msg_t>>(messages_for_follows);
-    follows_and_precedes_testing::test_follows
-        <msg_t, tbb::flow::join_node<JoinOutputType, tbb::flow::queueing>>(messages_for_follows);
-    follows_and_precedes_testing::test_follows
-        <msg_t, tbb::flow::join_node<JoinOutputType, tbb::flow::reserving>, tbb::flow::buffer_node<msg_t>>(messages_for_follows);
-    auto b = [](msg_t) { return msg_t(); };
-    class hash_compare {
-    public:
-        std::size_t hash(msg_t) const { return 0; }
-        bool equal(msg_t, msg_t) const { return true; }
-    };
-    follows_and_precedes_testing::test_follows
-        <msg_t, tbb::flow::join_node<JoinOutputType, tbb::flow::key_matching<msg_t, hash_compare>>, tbb::flow::buffer_node<msg_t>>
-        (messages_for_follows, b, b, b);
-
-    follows_and_precedes_testing::test_precedes
-        <msg_t, tbb::flow::join_node<JoinOutputType>>(messages_for_precedes);
-    follows_and_precedes_testing::test_precedes
-        <msg_t, tbb::flow::join_node<JoinOutputType, tbb::flow::queueing>>(messages_for_precedes);
-    follows_and_precedes_testing::test_precedes
-        <msg_t, tbb::flow::join_node<JoinOutputType, tbb::flow::reserving>>(messages_for_precedes);
-    follows_and_precedes_testing::test_precedes
-        <msg_t, tbb::flow::join_node<JoinOutputType, tbb::flow::key_matching<msg_t, hash_compare>>>
-        (messages_for_precedes, b, b, b);
-}
-#endif
-
-#if __TBB_CPP17_DEDUCTION_GUIDES_PRESENT
-void test_deduction_guides() {
-    using namespace tbb::flow;
-
-    graph g;
-    using tuple_type = std::tuple<int, int, int>;
-    broadcast_node<int> b1(g), b2(g), b3(g);
-    broadcast_node<tuple_type> b4(g);
-    join_node<tuple_type> j0(g);
-
-#if __TBB_PREVIEW_FLOW_GRAPH_NODE_SET
-    join_node j1(follows(b1, b2, b3));
-    static_assert(std::is_same_v<decltype(j1), join_node<tuple_type>>);
-
-    join_node j2(follows(b1, b2, b3), reserving());
-    static_assert(std::is_same_v<decltype(j2), join_node<tuple_type, reserving>>);
-
-    join_node j3(precedes(b4));
-    static_assert(std::is_same_v<decltype(j3), join_node<tuple_type>>);
-
-    join_node j4(precedes(b4), reserving());
-    static_assert(std::is_same_v<decltype(j4), join_node<tuple_type, reserving>>);
-#endif
-
-    join_node j5(j0);
-    static_assert(std::is_same_v<decltype(j5), join_node<tuple_type>>);
-}
-
-#endif
-
-namespace multiple_predecessors {
-
-using namespace tbb::flow;
-
-using join_node_t = join_node<std::tuple<continue_msg, continue_msg, continue_msg>, reserving>;
-using queue_node_t = queue_node<std::tuple<continue_msg, continue_msg, continue_msg>>;
-
-void twist_join_connections(
-    buffer_node<continue_msg>& bn1, buffer_node<continue_msg>& bn2, buffer_node<continue_msg>& bn3,
-    join_node_t& jn)
-{
-    // order, in which edges are created/destroyed, is important
-    make_edge(bn1, input_port<0>(jn));
-    make_edge(bn2, input_port<0>(jn));
-    make_edge(bn3, input_port<0>(jn));
-
-    remove_edge(bn3, input_port<0>(jn));
-    make_edge  (bn3, input_port<2>(jn));
-
-    remove_edge(bn2, input_port<0>(jn));
-    make_edge  (bn2, input_port<1>(jn));
-}
-
-std::unique_ptr<join_node_t> connect_join_via_make_edge(
-    graph& g, buffer_node<continue_msg>& bn1, buffer_node<continue_msg>& bn2,
-    buffer_node<continue_msg>& bn3, queue_node_t& qn)
-{
-    std::unique_ptr<join_node_t> jn( new join_node_t(g) );
-    twist_join_connections( bn1, bn2, bn3, *jn );
-    make_edge(*jn, qn);
-    return jn;
-}
-
-#if TBB_PREVIEW_FLOW_GRAPH_FEATURES
-std::unique_ptr<join_node_t> connect_join_via_follows(
-    graph&, buffer_node<continue_msg>& bn1, buffer_node<continue_msg>& bn2,
-    buffer_node<continue_msg>& bn3, queue_node_t& qn)
-{
-    auto bn_set = make_node_set(bn1, bn2, bn3);
-    std::unique_ptr<join_node_t> jn( new join_node_t(follows(bn_set)) );
-    make_edge(*jn, qn);
-    return jn;
-}
-
-std::unique_ptr<join_node_t> connect_join_via_precedes(
-    graph&, buffer_node<continue_msg>& bn1, buffer_node<continue_msg>& bn2,
-    buffer_node<continue_msg>& bn3, queue_node_t& qn)
-{
-    auto qn_set = make_node_set(qn);
-    auto qn_copy_set = qn_set;
-    std::unique_ptr<join_node_t> jn( new join_node_t(precedes(qn_copy_set)) );
-    twist_join_connections( bn1, bn2, bn3, *jn );
-    return jn;
-}
-#endif // TBB_PREVIEW_FLOW_GRAPH_FEATURES
-
-void run_and_check(
-    graph& g, buffer_node<continue_msg>& bn1, buffer_node<continue_msg>& bn2,
-    buffer_node<continue_msg>& bn3, queue_node_t& qn, bool expected)
-{
-    std::tuple<continue_msg, continue_msg, continue_msg> msg;
-
-    bn1.try_put(continue_msg());
-    bn2.try_put(continue_msg());
-    bn3.try_put(continue_msg());
-    g.wait_for_all();
-
-    CHECK_MESSAGE(
-        (qn.try_get(msg) == expected),
-        "Unexpected message absence/existence at the end of the graph."
-    );
-}
-
-template<typename ConnectJoinNodeFunc>
-void test(ConnectJoinNodeFunc&& connect_join_node) {
-    graph g;
-    buffer_node<continue_msg> bn1(g);
-    buffer_node<continue_msg> bn2(g);
-    buffer_node<continue_msg> bn3(g);
-    queue_node_t qn(g);
-
-    auto jn = connect_join_node(g, bn1, bn2, bn3, qn);
-
-    run_and_check(g, bn1, bn2, bn3, qn, /*expected=*/true);
-
-    remove_edge(bn3, input_port<2>(*jn));
-    remove_edge(bn2, input_port<1>(*jn));
-    remove_edge(bn1, input_port<0>(*jn));
-    remove_edge(*jn, qn);
-
-    run_and_check(g, bn1, bn2, bn3, qn, /*expected=*/false);
-}
-} // namespace multiple_predecessors
-
-
-#if __TBB_PREVIEW_FLOW_GRAPH_NODE_SET
-//! Test follows and precedes API
-//! \brief \ref error_guessing
-TEST_CASE("Test follows and preceedes API"){
-    test_follows_and_precedes_api();
-}
-#endif
-
-#if __TBB_CPP17_DEDUCTION_GUIDES_PRESENT
-//! Test deduction guides
-//! \brief \ref requirement
-TEST_CASE("Deduction guides test"){
-    test_deduction_guides();
-}
-#endif
-
 //! Test hash buffers behavior
 //! \brief \ref error_guessing
 TEST_CASE("Tagged buffers test"){
@@ -317,14 +142,52 @@ TEST_CASE("Recirculation test"){
     generate_recirc_test<std::tuple<int,float> >::do_test();
 }
 
+// TODO: Look deeper into this test to see if it has the right name
+// and if it actually tests some kind of regression. It is possible
+// that `connect_join_via_follows` and `connect_join_via_precedes`
+// functions are redundant.
+
 //! Test maintaining correct count of ports without input
 //! \brief \ref error_guessing
 TEST_CASE("Test removal of the predecessor while having none") {
     using namespace multiple_predecessors;
 
     test(connect_join_via_make_edge);
-#if TBB_PREVIEW_FLOW_GRAPH_FEATURES
-    test(connect_join_via_follows);
-    test(connect_join_via_precedes);
-#endif
+}
+
+//! \brief \ref error_guessing
+TEST_CASE("Test reservation on the port") {
+    tbb::flow::graph g;
+
+    tbb::flow::buffer_node<int> buffer1(g), buffer2(g);
+    tbb::flow::join_node<std::tuple<int, int>, tbb::flow::reserving> join(g);
+    tbb::flow::buffer_node<std::tuple<int, int>> buffer3(g);
+
+    auto& port0 = tbb::flow::input_port<0>(join);
+    auto& port1 = tbb::flow::input_port<1>(join);
+
+    tbb::flow::make_edge(buffer1, port0);
+    tbb::flow::make_edge(buffer2, port1);
+    tbb::flow::make_edge(join, buffer3);
+
+    int value = -42;
+    bool result = port0.reserve(value);
+    CHECK_MESSAGE(!result, "Incorrect reserve return value");
+
+    result = port1.reserve(value);
+    CHECK_MESSAGE(!result, "Incorrect reserve return value");
+
+    buffer1.try_put(1);
+    g.wait_for_all();
+
+    result = port0.reserve(value);
+    CHECK_MESSAGE(result, "Incorrect reserve return value");
+    CHECK_MESSAGE(value == 1, "Incorrect reserved value");
+    port0.release();
+
+    buffer2.try_put(2);
+    g.wait_for_all();
+
+    result = port1.reserve(value);
+    CHECK_MESSAGE(result, "incorrect reserve return value");
 }

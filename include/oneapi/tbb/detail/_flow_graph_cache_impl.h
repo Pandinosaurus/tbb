@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2024 Intel Corporation
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@
 #error Do not #include this internal file directly; use public TBB headers instead.
 #endif
 
-// included in namespace tbb::detail::d1 (in flow_graph.h)
+// included in namespace tbb::detail::d2 (in flow_graph.h)
 
 //! A node_cache maintains a std::queue of elements of type T.  Each operation is protected by a lock.
 template< typename T, typename M=spin_mutex >
@@ -98,9 +98,12 @@ public:
         // Do not work with the passed pointer here as it may not be fully initialized yet
     }
 
-    bool get_item( output_type& v ) {
+private:
+    bool get_item_impl( output_type& v
+                        __TBB_FLOW_GRAPH_METAINFO_ARG(message_metainfo* metainfo_ptr = nullptr) )
+    {
 
-        bool msg = false;
+        bool successful_get = false;
 
         do {
             predecessor_type *src;
@@ -113,18 +116,35 @@ public:
             }
 
             // Try to get from this sender
-            msg = src->try_get( v );
+#if __TBB_PREVIEW_FLOW_GRAPH_TRY_PUT_AND_WAIT
+            if (metainfo_ptr) {
+                successful_get = src->try_get( v, *metainfo_ptr );
+            } else
+#endif
+            {
+                successful_get = src->try_get( v );
+            }
 
-            if (msg == false) {
+            if (successful_get == false) {
                 // Relinquish ownership of the edge
                 register_successor(*src, *my_owner);
             } else {
                 // Retain ownership of the edge
                 this->add(*src);
             }
-        } while ( msg == false );
-        return msg;
+        } while ( successful_get == false );
+        return successful_get;
     }
+public:
+    bool get_item( output_type& v ) {
+        return get_item_impl(v);
+    }
+
+#if __TBB_PREVIEW_FLOW_GRAPH_TRY_PUT_AND_WAIT
+    bool get_item( output_type& v, message_metainfo& metainfo ) {
+        return get_item_impl(v, &metainfo);
+    }
+#endif
 
     // If we are removing arcs (rf_clear_edges), call clear() rather than reset().
     void reset() {
@@ -152,67 +172,84 @@ public:
     typedef receiver<T> successor_type;
 
     reservable_predecessor_cache( successor_type* owner )
-        : predecessor_cache<T,M>(owner), reserved_src(NULL)
+        : predecessor_cache<T,M>(owner), reserved_src(nullptr)
     {
         // Do not work with the passed pointer here as it may not be fully initialized yet
     }
 
-    bool
-    try_reserve( output_type &v ) {
-        bool msg = false;
+private:
+    bool try_reserve_impl( output_type &v __TBB_FLOW_GRAPH_METAINFO_ARG(message_metainfo* metainfo) ) {
+        bool successful_reserve = false;
 
         do {
+            predecessor_type* pred = nullptr;
             {
                 typename mutex_type::scoped_lock lock(this->my_mutex);
-                if ( reserved_src || this->internal_empty() )
+                if ( reserved_src.load(std::memory_order_relaxed) || this->internal_empty() )
                     return false;
 
-                reserved_src = &this->internal_pop();
+                pred = &this->internal_pop();
+                reserved_src.store(pred, std::memory_order_relaxed);
             }
 
             // Try to get from this sender
-            msg = reserved_src->try_reserve( v );
+#if __TBB_PREVIEW_FLOW_GRAPH_TRY_PUT_AND_WAIT
+            if (metainfo) {
+                successful_reserve = pred->try_reserve( v, *metainfo );
+            } else
+#endif
+            {
+                successful_reserve = pred->try_reserve( v );
+            }
 
-            if (msg == false) {
+            if (successful_reserve == false) {
                 typename mutex_type::scoped_lock lock(this->my_mutex);
                 // Relinquish ownership of the edge
-                register_successor( *reserved_src, *this->my_owner );
-                reserved_src = NULL;
+                register_successor( *pred, *this->my_owner );
+                reserved_src.store(nullptr, std::memory_order_relaxed);
             } else {
                 // Retain ownership of the edge
-                this->add( *reserved_src );
+                this->add( *pred);
             }
-        } while ( msg == false );
+        } while ( successful_reserve == false );
 
-        return msg;
+        return successful_reserve;
+    }
+public:
+    bool try_reserve( output_type& v ) {
+        return try_reserve_impl(v __TBB_FLOW_GRAPH_METAINFO_ARG(nullptr));
     }
 
-    bool
-    try_release( ) {
-        reserved_src->try_release( );
-        reserved_src = NULL;
+#if __TBB_PREVIEW_FLOW_GRAPH_TRY_PUT_AND_WAIT
+    bool try_reserve( output_type& v, message_metainfo& metainfo ) {
+        return try_reserve_impl(v, &metainfo);
+    }
+#endif
+
+    bool try_release() {
+        reserved_src.load(std::memory_order_relaxed)->try_release();
+        reserved_src.store(nullptr, std::memory_order_relaxed);
         return true;
     }
 
-    bool
-    try_consume( ) {
-        reserved_src->try_consume( );
-        reserved_src = NULL;
+    bool try_consume() {
+        reserved_src.load(std::memory_order_relaxed)->try_consume();
+        reserved_src.store(nullptr, std::memory_order_relaxed);
         return true;
     }
 
-    void reset( ) {
-        reserved_src = NULL;
-        predecessor_cache<T,M>::reset( );
+    void reset() {
+        reserved_src.store(nullptr, std::memory_order_relaxed);
+        predecessor_cache<T, M>::reset();
     }
 
     void clear() {
-        reserved_src = NULL;
-        predecessor_cache<T,M>::clear();
+        reserved_src.store(nullptr, std::memory_order_relaxed);
+        predecessor_cache<T, M>::clear();
     }
 
 private:
-    predecessor_type *reserved_src;
+    std::atomic<predecessor_type*> reserved_src;
 };
 
 
@@ -269,6 +306,9 @@ public:
     }
 
     virtual graph_task* try_put_task( const T& t ) = 0;
+#if __TBB_PREVIEW_FLOW_GRAPH_TRY_PUT_AND_WAIT
+    virtual graph_task* try_put_task( const T& t, const message_metainfo& metainfo ) = 0;
+#endif
 };  // successor_cache<T>
 
 //! An abstract cache of successors, specialized to continue_msg
@@ -328,6 +368,9 @@ public:
     }
 
     virtual graph_task* try_put_task( const continue_msg& t ) = 0;
+#if __TBB_PREVIEW_FLOW_GRAPH_TRY_PUT_AND_WAIT
+    virtual graph_task* try_put_task( const continue_msg& t, const message_metainfo& metainfo ) = 0;
+#endif
 };  // successor_cache< continue_msg >
 
 //! A cache of successors that are broadcast to
@@ -337,19 +380,12 @@ class broadcast_cache : public successor_cache<T, M> {
     typedef M mutex_type;
     typedef typename successor_cache<T,M>::successors_type successors_type;
 
-public:
-
-    broadcast_cache( typename base_type::owner_type* owner ): base_type(owner) {
-        // Do not work with the passed pointer here as it may not be fully initialized yet
-    }
-
-    // as above, but call try_put_task instead, and return the last task we received (if any)
-    graph_task* try_put_task( const T &t ) override {
+    graph_task* try_put_task_impl( const T& t __TBB_FLOW_GRAPH_METAINFO_ARG(const message_metainfo& metainfo) ) {
         graph_task * last_task = nullptr;
         typename mutex_type::scoped_lock l(this->my_mutex, /*write=*/true);
         typename successors_type::iterator i = this->my_successors.begin();
         while ( i != this->my_successors.end() ) {
-            graph_task *new_task = (*i)->try_put_task(t);
+            graph_task *new_task = (*i)->try_put_task(t __TBB_FLOW_GRAPH_METAINFO_ARG(metainfo));
             // workaround for icc bug
             graph& graph_ref = (*i)->graph_reference();
             last_task = combine_tasks(graph_ref, last_task, new_task);  // enqueue if necessary
@@ -366,6 +402,21 @@ public:
         }
         return last_task;
     }
+public:
+
+    broadcast_cache( typename base_type::owner_type* owner ): base_type(owner) {
+        // Do not work with the passed pointer here as it may not be fully initialized yet
+    }
+
+    graph_task* try_put_task( const T &t ) override {
+        return try_put_task_impl(t __TBB_FLOW_GRAPH_METAINFO_ARG(message_metainfo{}));
+    }
+
+#if __TBB_PREVIEW_FLOW_GRAPH_TRY_PUT_AND_WAIT
+    graph_task* try_put_task( const T &t, const message_metainfo& metainfo ) override {
+        return try_put_task_impl(t, metainfo);
+    }
+#endif
 
     // call try_put_task and return list of received tasks
     bool gather_successful_try_puts( const T &t, graph_task_list& tasks ) {
@@ -412,11 +463,15 @@ public:
         return this->my_successors.size();
     }
 
-    graph_task* try_put_task( const T &t ) override {
+private:
+
+    graph_task* try_put_task_impl( const T &t
+                                   __TBB_FLOW_GRAPH_METAINFO_ARG(const message_metainfo& metainfo) )
+    {
         typename mutex_type::scoped_lock l(this->my_mutex, /*write=*/true);
         typename successors_type::iterator i = this->my_successors.begin();
         while ( i != this->my_successors.end() ) {
-            graph_task* new_task = (*i)->try_put_task(t);
+            graph_task* new_task = (*i)->try_put_task(t __TBB_FLOW_GRAPH_METAINFO_ARG(metainfo));
             if ( new_task ) {
                 return new_task;
             } else {
@@ -428,8 +483,19 @@ public:
                }
             }
         }
-        return NULL;
+        return nullptr;
     }
+
+public:
+    graph_task* try_put_task(const T& t) override {
+        return try_put_task_impl(t __TBB_FLOW_GRAPH_METAINFO_ARG(message_metainfo{}));
+    }
+
+#if __TBB_PREVIEW_FLOW_GRAPH_TRY_PUT_AND_WAIT
+    graph_task* try_put_task( const T& t, const message_metainfo& metainfo ) override {
+        return try_put_task_impl(t, metainfo);
+    }
+#endif
 };
 
 #endif // __TBB__flow_graph_cache_impl_H

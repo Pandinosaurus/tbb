@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2024 Intel Corporation
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -63,7 +63,7 @@ template< typename OutputType >
 void run_continue_nodes( int p, tbb::flow::graph& g, tbb::flow::continue_node< OutputType >& n ) {
     fake_continue_sender fake_sender;
     for (size_t i = 0; i < N; ++i) {
-        tbb::detail::d1::register_predecessor(n, fake_sender);
+        tbb::detail::d2::register_predecessor(n, fake_sender);
     }
 
     for (size_t num_receivers = 1; num_receivers <= MAX_NODES; ++num_receivers ) {
@@ -138,7 +138,7 @@ void continue_nodes_with_copy( ) {
         tbb::flow::continue_node< OutputType > exe_node( g, cf );
         fake_continue_sender fake_sender;
         for (size_t i = 0; i < N; ++i) {
-            tbb::detail::d1::register_predecessor(exe_node, fake_sender);
+            tbb::detail::d2::register_predecessor(exe_node, fake_sender);
         }
 
         for (size_t num_receivers = 1; num_receivers <= MAX_NODES; ++num_receivers ) {
@@ -259,8 +259,11 @@ struct lightweight_policy_body {
     {
         my_count = 0;
     }
-    lightweight_policy_body& operator=(const lightweight_policy_body&) = delete;
-    void operator()(tbb::flow::continue_msg) {
+
+    lightweight_policy_body( const lightweight_policy_body& ) = default;
+    lightweight_policy_body& operator=( const lightweight_policy_body& ) = delete;
+
+    void operator()( tbb::flow::continue_msg ) {
         ++my_count;
         std::thread::id body_thread_id = std::this_thread::get_id();
         CHECK_MESSAGE( (body_thread_id == my_thread_id), "Body executed as not lightweight");
@@ -310,86 +313,6 @@ void test_follows_and_precedes_api() {
 }
 #endif // __TBB_PREVIEW_FLOW_GRAPH_NODE_SET
 
-#if __TBB_CPP17_DEDUCTION_GUIDES_PRESENT
-
-template <typename ExpectedType, typename Body>
-void test_deduction_guides_common(Body body) {
-    using namespace tbb::flow;
-    graph g;
-
-    continue_node c1(g, body);
-    static_assert(std::is_same_v<decltype(c1), continue_node<ExpectedType>>);
-
-    continue_node c2(g, body, lightweight());
-    static_assert(std::is_same_v<decltype(c2), continue_node<ExpectedType, lightweight>>);
-
-    continue_node c3(g, 5, body);
-    static_assert(std::is_same_v<decltype(c3), continue_node<ExpectedType>>);
-
-    continue_node c4(g, 5, body, lightweight());
-    static_assert(std::is_same_v<decltype(c4), continue_node<ExpectedType, lightweight>>);
-
-    continue_node c5(g, body, node_priority_t(5));
-    static_assert(std::is_same_v<decltype(c5), continue_node<ExpectedType>>);
-
-    continue_node c6(g, body, lightweight(), node_priority_t(5));
-    static_assert(std::is_same_v<decltype(c6), continue_node<ExpectedType, lightweight>>);
-
-    continue_node c7(g, 5, body, node_priority_t(5));
-    static_assert(std::is_same_v<decltype(c7), continue_node<ExpectedType>>);
-
-    continue_node c8(g, 5, body, lightweight(), node_priority_t(5));
-    static_assert(std::is_same_v<decltype(c8), continue_node<ExpectedType, lightweight>>);
-
-#if __TBB_PREVIEW_FLOW_GRAPH_NODE_SET
-    broadcast_node<continue_msg> b(g);
-
-    continue_node c9(follows(b), body);
-    static_assert(std::is_same_v<decltype(c9), continue_node<ExpectedType>>);
-
-    continue_node c10(follows(b), body, lightweight());
-    static_assert(std::is_same_v<decltype(c10), continue_node<ExpectedType, lightweight>>);
-
-    continue_node c11(follows(b), 5, body);
-    static_assert(std::is_same_v<decltype(c11), continue_node<ExpectedType>>);
-
-    continue_node c12(follows(b), 5, body, lightweight());
-    static_assert(std::is_same_v<decltype(c12), continue_node<ExpectedType, lightweight>>);
-
-    continue_node c13(follows(b), body, node_priority_t(5));
-    static_assert(std::is_same_v<decltype(c13), continue_node<ExpectedType>>);
-
-    continue_node c14(follows(b), body, lightweight(), node_priority_t(5));
-    static_assert(std::is_same_v<decltype(c14), continue_node<ExpectedType, lightweight>>);
-
-    continue_node c15(follows(b), 5, body, node_priority_t(5));
-    static_assert(std::is_same_v<decltype(c15), continue_node<ExpectedType>>);
-
-    continue_node c16(follows(b), 5, body, lightweight(), node_priority_t(5));
-    static_assert(std::is_same_v<decltype(c16), continue_node<ExpectedType, lightweight>>);
-#endif // __TBB_PREVIEW_FLOW_GRAPH_NODE_SET
-
-    continue_node c17(c1);
-    static_assert(std::is_same_v<decltype(c17), continue_node<ExpectedType>>);
-}
-
-int continue_body_f(const tbb::flow::continue_msg&) { return 1; }
-void continue_void_body_f(const tbb::flow::continue_msg&) {}
-
-void test_deduction_guides() {
-    using tbb::flow::continue_msg;
-    test_deduction_guides_common<int>([](const continue_msg&)->int { return 1; } );
-    test_deduction_guides_common<continue_msg>([](const continue_msg&) {});
-
-    test_deduction_guides_common<int>([](const continue_msg&) mutable ->int { return 1; });
-    test_deduction_guides_common<continue_msg>([](const continue_msg&) mutable {});
-
-    test_deduction_guides_common<int>(continue_body_f);
-    test_deduction_guides_common<continue_msg>(continue_void_body_f);
-}
-
-#endif // __TBB_CPP17_DEDUCTION_GUIDES_PRESENT
-
 // TODO: use pass_through from test_function_node instead
 template<typename T>
 struct passing_body {
@@ -431,6 +354,176 @@ void test_successor_cache_specialization() {
                   "Wrong number of messages is passed via continue_node");
 }
 
+#if __TBB_PREVIEW_FLOW_GRAPH_TRY_PUT_AND_WAIT
+void test_try_put_and_wait_default() {
+    tbb::task_arena arena(1);
+
+    arena.execute([&]{
+        tbb::flow::graph g;
+
+        int processed_items = 0;
+
+        tbb::flow::continue_node<tbb::flow::continue_msg>* start_node = nullptr;
+
+        tbb::flow::continue_node<tbb::flow::continue_msg> cont(g,
+            [&](tbb::flow::continue_msg) noexcept {
+                static bool put_ten_msgs = true;
+                if (put_ten_msgs) {
+                    for (std::size_t i = 0; i < 10; ++i) {
+                        start_node->try_put(tbb::flow::continue_msg{});
+                    }
+                    put_ten_msgs = false;
+                }
+            });
+
+        start_node = &cont;
+
+        tbb::flow::continue_node<tbb::flow::continue_msg, tbb::flow::lightweight> writer(g,
+            [&](tbb::flow::continue_msg) noexcept {
+                ++processed_items;
+            });
+
+        tbb::flow::make_edge(cont, writer);
+
+        cont.try_put_and_wait(tbb::flow::continue_msg{});
+
+        // Only 1 item should be processed, with the additional 10 items having been spawned
+        CHECK_MESSAGE(processed_items == 1, "Unexpected items processing");
+
+        g.wait_for_all();
+
+        // The additional 10 items should be processed
+        CHECK_MESSAGE(processed_items == 11, "Unexpected items processing");
+    });
+}
+
+void test_try_put_and_wait_lightweight() {
+    tbb::task_arena arena(1);
+
+    arena.execute([&]{
+        tbb::flow::graph g;
+
+        std::vector<int> start_work_items;
+        std::vector<int> processed_items;
+        std::vector<int> new_work_items;
+
+        int wait_message = 10;
+
+        for (int i = 0; i < wait_message; ++i) {
+            start_work_items.emplace_back(i);
+            new_work_items.emplace_back(i + 1 + wait_message);
+        }
+
+        tbb::flow::continue_node<int, tbb::flow::lightweight>* start_node = nullptr;
+
+        tbb::flow::continue_node<int, tbb::flow::lightweight> cont(g,
+            [&](tbb::flow::continue_msg) noexcept {
+                static int counter = 0;
+                int i = counter++;
+                if (i == wait_message) {
+                    for (auto item : new_work_items) {
+                        (void)item;
+                        start_node->try_put(tbb::flow::continue_msg{});
+                    }
+                }
+                return i;
+            });
+
+        start_node = &cont;
+
+        tbb::flow::function_node<int, int, tbb::flow::lightweight> writer(g, tbb::flow::unlimited,
+            [&](int input) noexcept {
+                processed_items.emplace_back(input);
+                return 0;
+            });
+
+        tbb::flow::make_edge(cont, writer);
+
+        for (auto item : start_work_items) {
+            (void)item;
+            cont.try_put(tbb::flow::continue_msg{});
+        }
+
+        cont.try_put_and_wait(tbb::flow::continue_msg{});
+
+        CHECK_MESSAGE(processed_items.size() == start_work_items.size() + new_work_items.size() + 1,
+                      "Unexpected number of elements processed");
+
+        std::size_t check_index = 0;
+
+        // For lightweight continue_node, start_work_items are expected to be processed first
+        // while putting items into the first node
+        for (auto item : start_work_items) {
+            CHECK_MESSAGE(processed_items[check_index++] == item, "Unexpected items processing");
+        }
+
+        for (auto item : new_work_items) {
+            CHECK_MESSAGE(processed_items[check_index++] == item, "Unexpected items processing");
+        }
+        // wait_message would be processed only after new_work_items
+        CHECK_MESSAGE(processed_items[check_index++] == wait_message, "Unexpected items processing");
+
+        g.wait_for_all();
+
+        CHECK(check_index == processed_items.size());
+    });
+}
+
+void test_metainfo_buffering() {
+    tbb::task_arena arena(1);
+
+    arena.execute([&] {
+        tbb::flow::graph g;
+
+        std::vector<char> call_order;
+
+        tbb::flow::continue_node<tbb::flow::continue_msg>* b_ptr = nullptr;
+
+        tbb::flow::continue_node<tbb::flow::continue_msg> a(g,
+            [&](tbb::flow::continue_msg) noexcept {
+                call_order.push_back('A');
+                static std::once_flag flag; // Send a signal to B only in the first call
+                std::call_once(flag, [&]{ b_ptr->try_put(tbb::flow::continue_msg{}); });
+            });
+
+        tbb::flow::continue_node<tbb::flow::continue_msg> b(g,
+            [&](tbb::flow::continue_msg) noexcept {
+                call_order.push_back('B');
+                a.try_put(tbb::flow::continue_msg{});
+            });
+
+        b_ptr = &b;
+
+        tbb::flow::continue_node<tbb::flow::continue_msg, tbb::flow::lightweight> c(g,
+            [&](tbb::flow::continue_msg) noexcept {
+                call_order.push_back('C');
+            });
+
+        tbb::flow::make_edge(a, c);
+        tbb::flow::make_edge(b, c);
+
+        a.try_put_and_wait(tbb::flow::continue_msg{});
+
+        // Inside the first call of A, we send a signal to B.
+        // Both of them send signals to C. Since C lightweight, it is processed immediately
+        // upon receiving signals from both predecessors. This completes the wait.
+        CHECK(call_order == std::vector<char>{'A', 'B', 'C'});
+
+        g.wait_for_all();
+
+        // B previously sent a signal to A, which has now been processed.
+        // A sends a signal to C, which is not processed because no signal is received from B this time.
+        CHECK(call_order == std::vector<char>{'A', 'B', 'C', 'A'});
+    });
+}
+
+void test_try_put_and_wait() {
+    test_try_put_and_wait_default();
+    test_try_put_and_wait_lightweight();
+    test_metainfo_buffering();
+}
+#endif // __TBB_PREVIEW_FLOW_GRAPH_TRY_PUT_AND_WAIT
+
 //! Test concurrent continue_node for correctness
 //! \brief \ref error_guessing
 TEST_CASE("Concurrency testing") {
@@ -448,15 +541,9 @@ TEST_CASE("Two graphs") { test_two_graphs(); }
 TEST_CASE( "Lightweight policy" ) { test_lightweight_policy(); }
 
 #if __TBB_PREVIEW_FLOW_GRAPH_NODE_SET
-//! Test deprecated follows and preceedes API
+//! Test deprecated follows and precedes API
 //! \brief \ref error_guessing
 TEST_CASE( "Support for follows and precedes API" ) { test_follows_and_precedes_api(); }
-#endif
-
-#if __TBB_CPP17_DEDUCTION_GUIDES_PRESENT
-//! Test deduction guides
-//! \brief requirement
-TEST_CASE( "Deduction guides" ) { test_deduction_guides(); }
 #endif
 
 //! Test for successor cache specialization
@@ -501,3 +588,10 @@ TEST_CASE("constraints for continue_node body") {
     static_assert(!can_call_continue_node_ctor<output_type, WrongReturnOperatorRoundBrackets<output_type>>);
 }
 #endif // __TBB_CPP20_CONCEPTS_PRESENT
+
+#if __TBB_PREVIEW_FLOW_GRAPH_TRY_PUT_AND_WAIT
+//! \brief \ref error_guessing
+TEST_CASE("test continue_node try_put_and_wait") {
+    test_try_put_and_wait();
+}
+#endif

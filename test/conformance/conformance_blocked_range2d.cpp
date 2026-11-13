@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2022 Intel Corporation
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -83,8 +83,8 @@ static void SerialTest() {
                             range_type r( row_i, row_j, row_grain, col_i, col_j, col_grain );
                             utils::AssertSameType( r.is_divisible(), true );
                             utils::AssertSameType( r.empty(), true );
-                            utils::AssertSameType( static_cast<range_type::row_range_type::const_iterator*>(0), static_cast<row_type*>(0) );
-                            utils::AssertSameType( static_cast<range_type::col_range_type::const_iterator*>(0), static_cast<col_type*>(0) );
+                            utils::AssertSameType( static_cast<range_type::row_range_type::const_iterator*>(nullptr), static_cast<row_type*>(nullptr) );
+                            utils::AssertSameType( static_cast<range_type::col_range_type::const_iterator*>(nullptr), static_cast<col_type*>(nullptr) );
                             utils::AssertSameType( r.rows(), oneapi::tbb::blocked_range<row_type>( row_i, row_j, 1 ));
                             utils::AssertSameType( r.cols(), oneapi::tbb::blocked_range<col_type>( col_i, col_j, 1 ));
                             REQUIRE( r.empty()==(row_x==row_y||col_x==col_y) );
@@ -158,7 +158,9 @@ TEST_CASE("blocked_range2d proportional splitting") {
     oneapi::tbb::proportional_split ps(3, 1);
     oneapi::tbb::blocked_range2d<int> second(first, ps);
 
-    int expected_first_end = original.rows().begin() + ps.left() * (original.rows().end() - original.rows().begin()) / (ps.left() + ps.right());
+    int expected_first_end = static_cast<int>(
+        original.rows().begin() + ps.left() * (original.rows().end() - original.rows().begin()) / (ps.left() + ps.right())
+    );
     if (first.rows().size() == second.rows().size()) {
         // Splitting was made by cols
         utils::check_range_bounds_after_splitting(original.cols(), first.cols(), second.cols(), expected_first_end);

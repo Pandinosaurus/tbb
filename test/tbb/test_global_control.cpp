@@ -1,5 +1,6 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2025 Intel Corporation
+    Copyright (c) 2025 UXL Foundation Contributors
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -17,7 +18,14 @@
 //! \file test_global_control.cpp
 //! \brief Test for [sched.global_control] specification
 
-#define TBB_PREVIEW_WAITING_FOR_WORKERS 1
+// TODO: find criteria to automatically define this in utils_assert.h
+#define TEST_CUSTOM_ASSERTION_HANDLER_ENABLED 1
+
+#include "tbb/global_control.h"
+// checking that inclusion of global_control.h is enough to get TBB_EXT_CUSTOM_ASSERTION_HANDLER
+#if TBB_EXT_CUSTOM_ASSERTION_HANDLER != 202510
+    #error "TBB_EXT_CUSTOM_ASSERTION_HANDLER must be set to 202510"
+#endif
 
 #include "common/test.h"
 
@@ -25,7 +33,6 @@
 #include "common/spin_barrier.h"
 #include "common/utils_concurrency_limit.h"
 
-#include "tbb/global_control.h"
 #include "tbb/parallel_for.h"
 #include "tbb/task_group.h"
 #include "tbb/task_arena.h"
@@ -36,11 +43,11 @@ struct task_scheduler_handle_guard {
     tbb::task_scheduler_handle m_handle{};
 
     task_scheduler_handle_guard() {
-        m_handle = tbb::task_scheduler_handle::get();
+        m_handle = tbb::task_scheduler_handle{tbb::attach{}};
     }
 
     ~task_scheduler_handle_guard() {
-        tbb::task_scheduler_handle::release(m_handle);
+        m_handle.release();
     }
 
     tbb::task_scheduler_handle& get() {
@@ -50,14 +57,9 @@ struct task_scheduler_handle_guard {
 
 namespace TestBlockingTerminateNS {
 
-    struct EmptyBody {
-        void operator()() const {}
-        void operator()( int ) const {}
-    };
-
     struct TestAutoInitBody {
         void operator()( int ) const {
-            tbb::parallel_for( 0, 100, EmptyBody() );
+            tbb::parallel_for( 0, 100, utils::DummyBody() );
         }
     };
 
@@ -71,7 +73,7 @@ namespace TestBlockingTerminateNS {
         void operator()( int ) const {
             task_scheduler_handle_guard init;
             if ( !myAutoInit ) {
-                tbb::parallel_for(0, 10, EmptyBody());
+                tbb::parallel_for(0, 10, utils::DummyBody());
             }
             utils::FastRandom<> rnd( ++gSeed );
             // In case of auto init sub-tests we skip
@@ -81,18 +83,18 @@ namespace TestBlockingTerminateNS {
             switch ( rnd.get() % numCases ) {
             case 0: {
                 tbb::task_arena a;
-                a.enqueue( EmptyBody() );
+                a.enqueue(utils::DummyBody() );
                 break;
             }
             case 1: {
                 tbb::task_group tg;
-                EmptyBody eb;
+                utils::DummyBody eb;
                 tg.run( eb );
                 tg.wait();
                 break;
             }
             case 2:
-                tbb::parallel_for( 0, 100, EmptyBody() );
+                tbb::parallel_for( 0, 100, utils::DummyBody() );
                 break;
             case 3:
                 /* do nothing */
@@ -158,7 +160,7 @@ namespace TestBlockingTerminateNS {
 
         void operator()() {
             task_scheduler_handle_guard tsi2;
-            tbb::parallel_for(0, 2, EmptyBody()); // auto-init
+            tbb::parallel_for(0, 2, utils::DummyBody()); // auto-init
             tbb::finalize((myIndex == 0 ? tsi1.get() : tsi2.get()));
             REQUIRE_MESSAGE( false, "Blocking terminate did not throw the exception" );
         }
@@ -189,11 +191,16 @@ namespace TestBlockingTerminateNS {
     };
 
     void TestExceptions() {
-        ExceptionTest1 Test1(0), Test2(1);
+        ExceptionTest1 Test1(0);
         TestException( Test1 );
+        ExceptionTest1 Test2(1);
         TestException( Test2 );
-        ExceptionTest2 Test3;
-        TestException( Test3 );
+        if (utils::get_platform_max_threads() > 1) {
+            // TODO: Fix the arena leak issue on single threaded machine
+            // (see https://github.com/oneapi-src/oneTBB/issues/396)
+            ExceptionTest2 Test3;
+            TestException(Test3);
+        }
     }
 
 #endif /* TBB_USE_EXCEPTIONS */
@@ -205,7 +212,7 @@ void TestTerminationAndAutoinit(bool autoinit) {
     task_scheduler_handle_guard ctl2;
 
     if (autoinit) {
-        tbb::parallel_for(0, 10, TestBlockingTerminateNS::EmptyBody());
+        tbb::parallel_for(0, 10, utils::DummyBody());
     }
     bool res1 = tbb::finalize(ctl1.get(), std::nothrow);
     if (autoinit) {
@@ -217,66 +224,29 @@ void TestTerminationAndAutoinit(bool autoinit) {
     REQUIRE(res2);
 }
 
-//! Testing lifetime control conformance
-//! \brief \ref interface \ref requirement
-TEST_CASE("prolong lifetime simple") {
-    tbb::task_scheduler_handle hdl1 = tbb::task_scheduler_handle::get();
-    {
-        tbb::parallel_for(0, 10, TestBlockingTerminateNS::EmptyBody());
+//! Check no reference leak for an external thread
+//! \brief \ref regression \ref error_guessing
+TEST_CASE("test decrease reference") {
+    tbb::task_scheduler_handle handle = tbb::task_scheduler_handle{tbb::attach{}};
 
-        tbb::task_scheduler_handle hdl2 = tbb::task_scheduler_handle::get();
-        tbb::task_scheduler_handle::release(hdl2);
-    }
-    bool ok = tbb::finalize(hdl1, std::nothrow);
-    REQUIRE(ok);
+    std::thread thr([] { tbb::parallel_for(0, 1, [](int) {}); } );
+    thr.join();
+
+    REQUIRE(tbb::finalize(handle, std::nothrow));
 }
 
-//! Testing lifetime control conformance
-//! \brief \ref interface \ref requirement
-TEST_CASE("prolong lifetime simple 2") {
+//! Testing lifetime control
+//! \brief \ref error_guessing
+TEST_CASE("prolong lifetime auto init") {
     TestTerminationAndAutoinit(false);
     TestTerminationAndAutoinit(true);
 }
 
-//! Testing handle check for emptiness
-//! \brief \ref interface \ref requirement
-TEST_CASE("null handle check") {
-    tbb::task_scheduler_handle hndl;
-    REQUIRE_FALSE(hndl);
-}
-
-//! Testing handle check for emptiness
-//! \brief \ref interface \ref requirement
-TEST_CASE("null handle check 2") {
-    tbb::task_scheduler_handle hndl = tbb::task_scheduler_handle::get();
-    bool not_empty = (bool)hndl;
-
-    tbb::finalize(hndl, std::nothrow);
-
-    REQUIRE(not_empty);
-    REQUIRE_FALSE(hndl);
-}
-
-//! Testing handle check for emptiness
-//! \brief \ref interface \ref requirement
-TEST_CASE("null handle check 3") {
-    tbb::task_scheduler_handle handle1 = tbb::task_scheduler_handle::get();
-    tbb::task_scheduler_handle handle2(std::move(handle1));
-
-    bool handle1_empty = !handle1;
-    bool handle2_not_empty = (bool)handle2;
-
-    tbb::finalize(handle2, std::nothrow);
-
-    REQUIRE(handle1_empty);
-    REQUIRE(handle2_not_empty);
-}
-
 #if TBB_USE_EXCEPTIONS
 //! Testing lifetime control advanced
-//! \brief \ref interface \ref requirement
+//! \brief \ref error_guessing
 TEST_CASE("prolong lifetime advanced") {
-    // Exceptions test leaves auto-initialized sheduler after,
+    // Exceptions test leaves auto-initialized scheduler after,
     // because all blocking terminate calls are inside the parallel region,
     // thus resulting in false termination result.
     utils::NativeParallelFor(1,
@@ -284,47 +254,69 @@ TEST_CASE("prolong lifetime advanced") {
 }
 #endif
 
+#if !EMSCRIPTEN
 //! Testing multiple wait
-//! \brief \ref interface \ref requirement
+//! \brief \ref error_guessing
 TEST_CASE("prolong lifetime multiple wait") {
     TestBlockingTerminateNS::TestMultpleWait();
 }
+#endif
 
-//! Testing  global_control is created on one thread and destroyed on another.
-//! \brief \ref interface \ref requirement
-TEST_CASE("cross thread 1") {
-    // created GC, parallel_for on another thread - finalize
-    tbb::task_scheduler_handle ctl = tbb::task_scheduler_handle::get();
-    utils::NativeParallelFor(1, [&](int) {
-        tbb::parallel_for(0, 10, TestBlockingTerminateNS::EmptyBody());
-        bool res = tbb::finalize(ctl, std::nothrow);
-        REQUIRE(res);
+//! \brief \ref regression
+TEST_CASE("test concurrent task_scheduler_handle destruction") {
+    std::atomic<bool> stop{ false };
+    std::thread thr1([&] {
+        while (!stop) {
+            auto h = tbb::task_scheduler_handle{ tbb::attach{} };
+            tbb::finalize(h, std::nothrow_t{});
+        }
     });
+
+    for (int i = 0; i < 1000; ++i) {
+        std::thread thr2([] {
+            tbb::parallel_for(0, 1, [](int) {});
+        });
+        thr2.join();
+    }
+    stop = true;
+    thr1.join();
 }
 
-//! Testing  global_control is created on one thread and destroyed on another.
+//! Testing that assertion_handler_type is exactly the type defined in the documentation
 //! \brief \ref interface \ref requirement
-TEST_CASE("cross thread 2") {
-    // created GC, called parallel_for on this thread, killed the thread - and finalize on another thread
-    tbb::task_scheduler_handle ctl;
-    utils::NativeParallelFor(1, [&](int) {
-        ctl = tbb::task_scheduler_handle::get();
-        tbb::parallel_for(0, 10, TestBlockingTerminateNS::EmptyBody());
-    });
-    bool res = tbb::finalize(ctl, std::nothrow);
-    REQUIRE(res);
+TEST_CASE("Assertion handler type") {
+    using documented = void(*)(const char* /* location */, int /* line */,
+                               const char* /* expression */, const char* /* comment */);
+    static_assert(std::is_same<oneapi::tbb::assertion_handler_type, documented>::value,
+                  "Incorrect assertion handler type");
 }
 
-//! Testing multiple wait
-//! \brief \ref interface \ref requirement
-TEST_CASE("simple prolong lifetime 3") {
-    // Parallel region
-    tbb::parallel_for(0, 10, TestBlockingTerminateNS::EmptyBody());
-    // Termination
-    tbb::task_scheduler_handle ctl = tbb::task_scheduler_handle::get();
-    bool res = tbb::finalize(ctl, std::nothrow);
-    REQUIRE(res);
-    // New parallel region
-    tbb::parallel_for(0, 10, TestBlockingTerminateNS::EmptyBody());
+//! Using custom assertion handler to test failure on invalid max_allowed_parallelism
+//! \brief \ref interface \ref error_guessing
+TEST_CASE("Using custom assertion handler to test failure on invalid max_allowed_parallelism") {
+    TEST_CUSTOM_ASSERTION_HANDLER(
+        tbb::global_control(tbb::global_control::max_allowed_parallelism, 0),
+        "max_allowed_parallelism cannot be 0.");
 }
 
+//! Check that namespace injection allows to provide TBB 2020 source compatibility
+//! \brief \ref interface
+TEST_CASE("Check that namespace injection allows to provide TBB 2020 source compatibility") {
+    tbb::assertion_handler_type new_handler = [](const char*, int, const char*, const char*) {};
+
+    tbb::assertion_handler_type old_handler = tbb::set_assertion_handler(new_handler);
+    REQUIRE(old_handler != new_handler);
+}
+
+//! \brief \ref interface
+TEST_CASE("Assertion handler feature-test macro") {
+    CHECK_MESSAGE(TBB_HAS_CUSTOM_ASSERTION_HANDLER == 202608, "Incorrect assertion handler feature-test macro");
+}
+
+//! \brief \ref interface
+TEST_CASE("Assertion handler compatibility API") {
+    CHECK_MESSAGE((std::is_same<tbb::assertion_handler_type, tbb::ext::assertion_handler_type>::value),
+                  "Incorrect compat assertion_handler_type");
+    CHECK_MESSAGE(&tbb::get_assertion_handler == &tbb::ext::get_assertion_handler, "Incorrect compat get_assertion_handler");
+    CHECK_MESSAGE(&tbb::set_assertion_handler == &tbb::ext::set_assertion_handler, "Incorrect compat set_assertion_handler");
+}

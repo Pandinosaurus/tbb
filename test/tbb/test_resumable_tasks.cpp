@@ -1,5 +1,6 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2024 Intel Corporation
+    Copyright (c) 2026 UXL Foundation Contributors
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -90,14 +91,16 @@ private:
 };
 
 struct SuspendBody {
-    SuspendBody(AsyncActivity& a_) :
-        m_asyncActivity(a_) {}
+    SuspendBody(AsyncActivity& a_, std::thread::id id) :
+        m_asyncActivity(a_), thread_id(id) {}
     void operator()(tbb::task::suspend_point tag) {
+        CHECK(thread_id == std::this_thread::get_id());
         m_asyncActivity.submit(tag);
     }
 
 private:
     AsyncActivity& m_asyncActivity;
+    std::thread::id thread_id;
 };
 
 class InnermostArenaBody {
@@ -113,14 +116,14 @@ private:
     struct InnermostInnerParFor {
         InnermostInnerParFor(AsyncActivity& a_) : m_asyncActivity(a_) {}
         void operator()(int) const {
-            tbb::task::suspend(SuspendBody(m_asyncActivity));
+            tbb::task::suspend(SuspendBody(m_asyncActivity, std::this_thread::get_id()));
         }
         AsyncActivity& m_asyncActivity;
     };
     struct InnermostOuterParFor {
         InnermostOuterParFor(AsyncActivity& a_) : m_asyncActivity(a_) {}
         void operator()(int) const {
-            tbb::task::suspend(SuspendBody(m_asyncActivity));
+            tbb::task::suspend(SuspendBody(m_asyncActivity, std::this_thread::get_id()));
             InnermostInnerParFor inner_inner_body(m_asyncActivity);
             tbb::parallel_for(0, N, inner_inner_body);
         }
@@ -142,7 +145,7 @@ public:
     }
 
     void operator()(int i) const {
-        tbb::task::suspend(SuspendBody(m_asyncActivity));
+        tbb::task::suspend([&] (tbb::task::suspend_point sp) { m_asyncActivity.submit(sp); });
 
         tbb::task_arena& nested_arena = (i % 3 == 0) ?
             m_outermostArena : (i % 3 == 1 ? m_innermostArena : m_innermostArenaDefault);
@@ -255,6 +258,12 @@ private:
 
 // Simple test for basic resumable tasks functionality
 void TestSuspendResume() {
+#if __TBB_USE_SANITIZERS
+    constexpr int iter_size = 100;
+#else
+    constexpr int iter_size = 50000;
+#endif
+
     std::atomic<int> global_epoch; global_epoch = 0;
     EpochAsyncActivity async(4, global_epoch);
 
@@ -263,7 +272,7 @@ void TestSuspendResume() {
     inner_par_iters = outer_par_iters = 0;
 
     tbb::parallel_for(0, N, [&](int) {
-        for (int i = 0; i < 100; ++i) {
+        for (int i = 0; i < iter_size; ++i) {
             ets_fiber.local() = i;
 
             int local_epoch;
@@ -286,7 +295,7 @@ void TestSuspendResume() {
         ++outer_par_iters;
     });
     CHECK(outer_par_iters == N);
-    CHECK(inner_par_iters == N*N*100);
+    CHECK(inner_par_iters == N*N*iter_size);
 }
 
 // During cleanup external thread's local task pool may
@@ -301,7 +310,13 @@ void TestCleanupMaster() {
     std::atomic<int> iter_spawned;
     std::atomic<int> iter_executed;
 
-    for (int i = 0; i < 100; i++) {
+#if __TBB_USE_SANITIZERS
+    constexpr int max_iters = 25;
+#else
+    constexpr int max_iters = 100;
+#endif
+
+    for (int i = 0; i < max_iters; i++) {
         iter_spawned = 0;
         iter_executed = 0;
 
@@ -309,7 +324,7 @@ void TestCleanupMaster() {
             for (int k = 0; k < j*10 + 1; ++k) {
                 tg.run([&asyncActivity, j, &iter_executed] {
                     utils::doDummyWork(j * 10);
-                    tbb::task::suspend(SuspendBody(asyncActivity));
+                    tbb::task::suspend(SuspendBody(asyncActivity, std::this_thread::get_id()));
                     iter_executed++;
                 });
                 iter_spawned++;
@@ -327,7 +342,7 @@ public:
     ParForSuspendBody(AsyncActivity& a_, int iters) : asyncActivity(a_), m_numIters(iters) {}
     void operator()(int) const {
         utils::doDummyWork(m_numIters);
-        tbb::task::suspend(SuspendBody(asyncActivity));
+        tbb::task::suspend(SuspendBody(asyncActivity, std::this_thread::get_id()));
     }
 };
 
@@ -341,7 +356,7 @@ void TestNativeThread() {
         for (int i = 0; i < 10; i++) {
             arena.execute([&tg, &asyncActivity, &iter]() {
                 tg.run([&asyncActivity]() {
-                    tbb::task::suspend(SuspendBody(asyncActivity));
+                    tbb::task::suspend(SuspendBody(asyncActivity, std::this_thread::get_id()));
                 });
                 iter++;
             });
@@ -384,7 +399,9 @@ void TestObservers() {
     do {
         arena.execute([] {
             tbb::parallel_for(0, 10, [](int) {
-                tbb::task::suspend([](tbb::task::suspend_point tag) {
+                auto thread_id = std::this_thread::get_id();
+                tbb::task::suspend([thread_id](tbb::task::suspend_point tag) {
+                    CHECK(thread_id == std::this_thread::get_id());
                     tbb::task::resume(tag);
                 });
             }, tbb::simple_partitioner());
@@ -413,6 +430,7 @@ public:
 
 thread_local bool TestCaseGuard::m_local = false;
 
+#if !EMSCRIPTEN
 //! Nested test for suspend and resume
 //! \brief \ref error_guessing
 TEST_CASE("Nested test for suspend and resume") {
@@ -426,6 +444,7 @@ TEST_CASE("Nested arena") {
     TestCaseGuard guard;
     TestNestedArena();
 }
+#endif
 
 //! Test with external threads
 //! \brief \ref error_guessing
@@ -433,11 +452,13 @@ TEST_CASE("External threads") {
     TestNativeThread();
 }
 
+#if !EMSCRIPTEN
 //! Stress test with external threads
 //! \brief \ref stress
 TEST_CASE("Stress test with external threads") {
     TestCleanupMaster();
 }
+#endif
 
 //! Test with an arena observer
 //! \brief \ref error_guessing

@@ -1,5 +1,6 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2025 Intel Corporation
+    Copyright (c) 2025 UXL Foundation Contributors
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -51,16 +52,14 @@ static resource_string strings_for_itt[] = {
 
 static __itt_string_handle* ITT_get_string_handle(std::uintptr_t idx) {
     __TBB_ASSERT(idx < NUM_STRINGS, "string handle out of valid range");
-    return idx < NUM_STRINGS ? strings_for_itt[idx].itt_str_handle : NULL;
+    return idx < NUM_STRINGS ? strings_for_itt[idx].itt_str_handle : nullptr;
 }
 
 static void ITT_init_domains() {
+    // The library should not override the domain enable/disable flags, so that the tools can keep control
     tbb_domains[d1::ITT_DOMAIN_MAIN] = __itt_domain_create( _T("tbb") );
-    tbb_domains[d1::ITT_DOMAIN_MAIN]->flags = 1;
     tbb_domains[d1::ITT_DOMAIN_FLOW] = __itt_domain_create( _T("tbb.flow") );
-    tbb_domains[d1::ITT_DOMAIN_FLOW]->flags = 1;
     tbb_domains[d1::ITT_DOMAIN_ALGO] = __itt_domain_create( _T("tbb.algorithm") );
-    tbb_domains[d1::ITT_DOMAIN_ALGO]->flags = 1;
 }
 
 static void ITT_init_strings() {
@@ -122,7 +121,7 @@ void itt_set_sync_name(void* obj, const tchar* name) {
 const __itt_id itt_null_id = { 0, 0, 0 };
 
 static inline __itt_domain* get_itt_domain(d1::itt_domain_enum idx) {
-    if (tbb_domains[idx] == NULL) {
+    if (tbb_domains[idx] == nullptr) {
         ITT_DoOneTimeInitialization();
     }
     return tbb_domains[idx];
@@ -222,7 +221,7 @@ void __TBB_EXPORTED_FUNC itt_region_begin(d1::itt_domain_enum domain, void *regi
         if ( parent ) {
             itt_id_make( &parent_id, parent, parent_extra );
         }
-         __itt_region_begin( d, region_id, parent_id, NULL );
+         __itt_region_begin( d, region_id, parent_id, nullptr );
     }
 }
 

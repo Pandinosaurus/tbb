@@ -1,5 +1,6 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2025 Intel Corporation
+    Copyright (c) 2025 UXL Foundation Contributors
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -26,7 +27,14 @@
 #include "utils.h"
 #include "utils_assert.h"
 
-#if __linux__ || __sun
+#if __FreeBSD__
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/user.h>
+#include <libutil.h>
+#endif
+
+#if __unix__ || __sun
 #include <sys/resource.h>
 #include <unistd.h>
 #include <sys/utsname.h> /* for uname */
@@ -66,7 +74,7 @@ namespace utils {
         peakUsage
     };
 
-#if __linux__
+#if __unix__
     inline unsigned LinuxKernelVersion()
     {
         unsigned digit1, digit2, digit3;
@@ -91,16 +99,27 @@ namespace utils {
 #elif _WIN32
         PROCESS_MEMORY_COUNTERS mem;
         bool status = GetProcessMemoryInfo(GetCurrentProcess(), &mem, sizeof(mem)) != 0;
-        ASSERT(status, NULL);
+        ASSERT(status, nullptr);
         return stat == currentUsage ? mem.PagefileUsage : mem.PeakPagefileUsage;
-#elif __linux__
+#elif __FreeBSD__
+        /* Inspired from sys/compat/linprocfs/linprocfs.c */
+        long unsigned size = 0;
+        struct kinfo_proc *kip = kinfo_getproc(getpid());
+        ASSERT(kip != nullptr, "Failed to get process info.");
+        size = (long unsigned)kip->ki_size;
+        free (kip);
+        // VmPeak not supported
+        if (stat == peakUsage)
+            ASSERT(size, "VmPeak not supported.");
+        return size;
+#elif __unix__ && !defined(__QNX__)
         long unsigned size = 0;
         FILE* fst = fopen("/proc/self/status", "r");
-        ASSERT(fst != nullptr, NULL);
+        ASSERT(fst != nullptr, nullptr);
         const int BUF_SZ = 200;
         char buf_stat[BUF_SZ];
         const char* pattern = stat == peakUsage ? "VmPeak: %lu" : "VmSize: %lu";
-        while (NULL != fgets(buf_stat, BUF_SZ, fst)) {
+        while (nullptr != fgets(buf_stat, BUF_SZ, fst)) {
             if (1 == sscanf(buf_stat, pattern, &size)) {
                 ASSERT(size, "Invalid value of memory consumption.");
                 break;
@@ -119,7 +138,7 @@ namespace utils {
         task_basic_info info;
         mach_msg_type_number_t msg_type = TASK_BASIC_INFO_COUNT;
         status = task_info(mach_task_self(), TASK_BASIC_INFO, reinterpret_cast<task_info_t>(&info), &msg_type);
-        ASSERT(status == KERN_SUCCESS, NULL);
+        ASSERT(status == KERN_SUCCESS, nullptr);
         return info.virtual_size - shared_size;
 #else
         return 0;
@@ -128,7 +147,7 @@ namespace utils {
 
     //! Use approximately a specified amount of stack space.
     /** Recursion is used here instead of alloca because some implementations of alloca do not use the stack. */
-    void UseStackSpace(size_t amount, char* top = 0) {
+    void UseStackSpace(size_t amount, char* top = nullptr) {
         char x[1000];
         memset(x, -1, sizeof(x));
         if (!top)
@@ -138,35 +157,40 @@ namespace utils {
             UseStackSpace(amount, top);
     }
 
-#if __linux__
+#if __unix__
 
     inline bool isTHPEnabledOnMachine() {
-        unsigned long long thpPresent = 'n';
-        parseFileItem thpItem[] = { { "[alwa%cs] madvise never\n", thpPresent } };
-        parseFile</*BUFF_SIZE=*/100>("/sys/kernel/mm/transparent_hugepage/enabled", thpItem);
+        long long thpPresent = 'n';
+        long long hugePageSize = -1;
 
-        if (thpPresent == 'y') {
+        parseFileItem thpItem[] = { { "[alwa%cs] madvise never\n", thpPresent } };
+        parseFileItem hpSizeItem[] = { { "Hugepagesize: %lld kB", hugePageSize } };
+
+        parseFile</*BUFF_SIZE=*/100>("/sys/kernel/mm/transparent_hugepage/enabled", thpItem);
+        parseFile</*BUFF_SIZE=*/100>("/proc/meminfo", hpSizeItem);
+
+        if (hugePageSize > -1 && thpPresent == 'y') {
             return true;
         } else {
             return false;
         }
     }
-    inline unsigned long long getSystemTHPAllocatedSize() {
-        unsigned long long anonHugePagesSize = 0;
+    inline long long getSystemTHPAllocatedSize() {
+        long long anonHugePagesSize = 0;
         parseFileItem meminfoItems[] = {
-            { "AnonHugePages: %llu kB", anonHugePagesSize } };
+            { "AnonHugePages: %lld kB", anonHugePagesSize } };
         parseFile</*BUFF_SIZE=*/100>("/proc/meminfo", meminfoItems);
         return anonHugePagesSize;
     }
-    inline unsigned long long getSystemTHPCount() {
-        unsigned long long anonHugePages = 0;
+    inline long long getSystemTHPCount() {
+        long long anonHugePages = 0;
         parseFileItem vmstatItems[] = {
-            { "nr_anon_transparent_hugepages %llu", anonHugePages } };
+            { "nr_anon_transparent_hugepages %lld", anonHugePages } };
         parseFile</*BUFF_SIZE=*/100>("/proc/vmstat", vmstatItems);
         return anonHugePages;
     }
 
-#endif // __linux__
+#endif // __unix__
 
 } // namespace utils
 #endif // __TBB_test_common_memory_usage_H_

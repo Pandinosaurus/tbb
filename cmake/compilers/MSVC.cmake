@@ -1,4 +1,5 @@
-# Copyright (c) 2020-2021 Intel Corporation
+# Copyright (c) 2020-2025 Intel Corporation
+# Copyright (c) 2026 UXL Foundation Contributors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,10 +20,12 @@ set(TBB_DEF_FILE_PREFIX win${TBB_ARCH})
 # TODO: consider use of CMP0092 CMake policy.
 string(REGEX REPLACE "/W[0-4]" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 
-# Warning suppression C4324: structure was padded due to alignment specifier
 set(TBB_WARNING_LEVEL $<$<NOT:$<CXX_COMPILER_ID:Intel>>:/W4> $<$<BOOL:${TBB_STRICT}>:/WX>)
+
+# Warning suppression C4324: structure was padded due to alignment specifier
 set(TBB_WARNING_SUPPRESS /wd4324)
-set(TBB_TEST_COMPILE_FLAGS /bigobj)
+
+set(TBB_TEST_COMPILE_FLAGS ${TBB_TEST_COMPILE_FLAGS} /bigobj)
 if (MSVC_VERSION LESS_EQUAL 1900)
     # Warning suppression C4503 for VS2015 and earlier:
     # decorated name length exceeded, name was truncated.
@@ -30,8 +33,14 @@ if (MSVC_VERSION LESS_EQUAL 1900)
     # https://docs.microsoft.com/en-us/cpp/error-messages/compiler-warnings/compiler-warning-level-1-c4503
     set(TBB_TEST_COMPILE_FLAGS ${TBB_TEST_COMPILE_FLAGS} /wd4503)
 endif()
-set(TBB_LIB_COMPILE_FLAGS -D_CRT_SECURE_NO_WARNINGS /GS)
-set(TBB_COMMON_COMPILE_FLAGS /volatile:iso /FS)
+set(TBB_LIB_COMPILE_FLAGS -D_CRT_SECURE_NO_WARNINGS /GS /Gy /sdl $<$<VERSION_LESS:${MSVC_VERSION},1930>:/ZH:SHA_256>)
+set(TBB_COMMON_COMPILE_FLAGS ${TBB_COMMON_COMPILE_FLAGS} /volatile:iso /FS /EHsc)
+
+set(TBB_LIB_LINK_FLAGS ${TBB_LIB_LINK_FLAGS} LINKER:/DEPENDENTLOADFLAG:0x2000 LINKER:/DYNAMICBASE LINKER:/NXCOMPAT)
+
+if (TBB_ARCH EQUAL 32)
+    set(TBB_LIB_LINK_FLAGS ${TBB_LIB_LINK_FLAGS} LINKER:/SAFESEH )
+endif()
 
 # Ignore /WX set through add_compile_options() or added to CMAKE_CXX_FLAGS if TBB_STRICT is disabled.
 if (NOT TBB_STRICT AND COMMAND tbb_remove_compile_flag)
@@ -40,7 +49,7 @@ endif()
 
 if (WINDOWS_STORE OR TBB_WINDOWS_DRIVER)
     set(TBB_COMMON_COMPILE_FLAGS ${TBB_COMMON_COMPILE_FLAGS} /D_WIN32_WINNT=0x0A00)
-    set(TBB_COMMON_LINK_FLAGS /NODEFAULTLIB:kernel32.lib /INCREMENTAL:NO)
+    set(TBB_COMMON_LINK_FLAGS -NODEFAULTLIB:kernel32.lib -INCREMENTAL:NO)
     set(TBB_COMMON_LINK_LIBS OneCore.lib)
 endif()
 
@@ -55,7 +64,7 @@ if (WINDOWS_STORE)
     string(REGEX REPLACE "WindowsApp.lib" "" CMAKE_CXX_STANDARD_LIBRARIES "${CMAKE_CXX_STANDARD_LIBRARIES}")
 
     if (TBB_NO_APPCONTAINER)
-        set(TBB_LIB_LINK_FLAGS ${TBB_LIB_LINK_FLAGS} /APPCONTAINER:NO)
+        set(TBB_LIB_LINK_FLAGS ${TBB_LIB_LINK_FLAGS} -APPCONTAINER:NO)
     endif()
 endif()
 
@@ -69,4 +78,27 @@ if (TBB_WINDOWS_DRIVER)
     set(TBB_COMMON_COMPILE_FLAGS ${TBB_COMMON_COMPILE_FLAGS} /D _UNICODE /DUNICODE /DWINAPI_FAMILY=WINAPI_FAMILY_APP /D__WRL_NO_DEFAULT_LIB__)
 endif()
 
+if (TBB_FILE_TRIM AND NOT CMAKE_CXX_COMPILER_ID MATCHES "(Intel|IntelLLVM|Clang)")
+    add_compile_options(
+        "$<$<COMPILE_LANGUAGE:CXX>:/d1trimfile:${NATIVE_TBB_PROJECT_ROOT_DIR}\\>"
+        "$<$<COMPILE_LANGUAGE:CXX>:/d1trimfile:${CMAKE_SOURCE_DIR}/>")
+endif()
+
+if (TBB_CONTROL_FLOW_GUARD)
+    set(TBB_LIB_COMPILE_FLAGS ${TBB_LIB_COMPILE_FLAGS} /guard:cf)
+    set(TBB_LIB_LINK_FLAGS ${TBB_LIB_LINK_FLAGS} LINKER:/guard:cf)
+endif()
+
+if (CMAKE_CXX_COMPILER_ID MATCHES "(Clang|IntelLLVM)")
+    if (CMAKE_SYSTEM_PROCESSOR MATCHES "(x86|AMD64|i.86)")
+        set(TBB_COMMON_COMPILE_FLAGS ${TBB_COMMON_COMPILE_FLAGS} -mrtm -mwaitpkg)
+    endif()
+    set(TBB_IPO_COMPILE_FLAGS $<$<NOT:$<CONFIG:Debug>>:-flto>)
+    set(TBB_IPO_LINK_FLAGS $<$<NOT:$<CONFIG:Debug>>:-flto>)
+else()
+    set(TBB_IPO_COMPILE_FLAGS $<$<NOT:$<CONFIG:Debug>>:/GL>)
+    set(TBB_IPO_LINK_FLAGS $<$<NOT:$<CONFIG:Debug>>:-LTCG> $<$<NOT:$<CONFIG:Debug>>:-INCREMENTAL:NO>)
+endif()
+
 set(TBB_OPENMP_FLAG /openmp)
+set(TBB_OPENMP_NO_LINK_FLAG TRUE) # TBB_OPENMP_FLAG will be used only on compilation but not on linkage

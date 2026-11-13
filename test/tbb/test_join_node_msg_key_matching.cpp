@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2022 Intel Corporation
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -16,7 +16,6 @@
 
 // Message based key matching is a preview feature
 #define TBB_PREVIEW_FLOW_GRAPH_FEATURES 1
-#define MAX_TUPLE_TEST_SIZE 10
 
 #include "common/config.h"
 
@@ -24,25 +23,6 @@
 
 //! \file test_join_node_msg_key_matching.cpp
 //! \brief Test for [preview] functionality
-
-#if __TBB_PREVIEW_FLOW_GRAPH_NODE_SET
-#include <array>
-#include <vector>
-void test_follows_and_precedes_api() {
-    using msg_t = MyMessageKeyWithoutKey<int, int>;
-    using JoinOutputType = std::tuple<msg_t, msg_t, msg_t>;
-
-    std::array<msg_t, 3> messages_for_follows = { {msg_t(), msg_t(), msg_t()} };
-    std::vector<msg_t> messages_for_precedes = { msg_t(), msg_t(), msg_t() };
-
-    follows_and_precedes_testing::test_follows
-        <msg_t, tbb::flow::join_node<JoinOutputType, tbb::flow::key_matching<std::size_t>>, tbb::flow::buffer_node<msg_t>>
-        (messages_for_follows);
-    follows_and_precedes_testing::test_precedes
-        <msg_t, tbb::flow::join_node<JoinOutputType, tbb::flow::key_matching<std::size_t>>>
-        (messages_for_precedes);
-}
-#endif
 
 #if __TBB_CPP17_DEDUCTION_GUIDES_PRESENT
 struct message_key {
@@ -76,31 +56,6 @@ TEST_CASE("Serial test") {
     generate_test<serial_test, std::tuple<MyMessageKeyWithoutKeyMethod<std::string, double>, MyMessageKeyWithBrokenKey<std::string, float> >, message_based_key_matching<std::string> >::do_test();
 }
 
-template <typename T1, typename T2>
-using make_tuple = decltype(std::tuple_cat(T1(), std::tuple<T2>()));
-using T1 = std::tuple<MyMessageKeyWithoutKeyMethod<std::string, double>>;
-using T2 = make_tuple<T1, MyMessageKeyWithBrokenKey<std::string, int>>;
-using T3 = make_tuple < T2, MyMessageKeyWithoutKey<std::string, int>>;
-using T4 = make_tuple < T3, MyMessageKeyWithoutKeyMethod<std::string, size_t>>;
-using T5 = make_tuple < T4, MyMessageKeyWithBrokenKey<std::string, int>>;
-using T6 = make_tuple < T5, MyMessageKeyWithoutKeyMethod<std::string, short>>;
-using T7 = make_tuple < T6, MyMessageKeyWithoutKeyMethod<std::string, threebyte>>;
-using T8 = make_tuple < T7, MyMessageKeyWithBrokenKey<std::string, int>>;
-using T9 = make_tuple < T8, MyMessageKeyWithoutKeyMethod<std::string, threebyte>>;
-using T10 = make_tuple < T9, MyMessageKeyWithBrokenKey<std::string, size_t>>;
-
-//! Serial test with different tuple sizes
-//! \brief \ref error_guessing
-TEST_CASE_TEMPLATE("Serial N tests", T, T2, T3, T4, T5, T6, T7, T8, T9, T10) {
-    generate_test<serial_test, T, message_based_key_matching<std::string&> >::do_test();
-}
-
-//! Parallel test with different tuple sizes
-//! \brief \ref error_guessing
-TEST_CASE_TEMPLATE("Parallel N tests", T, T2, T3, T4, T5, T6, T7, T8, T9, T10) {
-    generate_test<parallel_test, T, message_based_key_matching<std::string&> >::do_test();
-}
-
 //! Parallel test with special key types
 //! \brief \ref error_guessing
 TEST_CASE("Parallel test"){
@@ -116,10 +71,3 @@ TEST_CASE("Deduction guides test"){
     test_deduction_guides();
 }
 #endif
-
-//! Serial test with special key types
-//! \brief \ref error_guessing
-TEST_CASE("Serial test"){
-    generate_test<serial_test, std::tuple<MyMessageKeyWithBrokenKey<int, double>, MyMessageKeyWithoutKey<int, float> >, message_based_key_matching<int> >::do_test();
-    generate_test<serial_test, std::tuple<MyMessageKeyWithoutKeyMethod<std::string, double>, MyMessageKeyWithBrokenKey<std::string, float> >, message_based_key_matching<std::string> >::do_test();
-}

@@ -1,5 +1,6 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2022 Intel Corporation
+    Copyright (c) 2026 UXL Foundation Contributors
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -32,6 +33,7 @@
 #include <algorithm>
 #include <cstring>
 #include <chrono>
+#include <unordered_set>
 
 #if HARNESS_TBBMALLOC_THREAD_SHUTDOWN && __TBB_SOURCE_DIRECTLY_INCLUDED && (_WIN32 || _WIN64)
 #include "../../src/tbbmalloc/tbbmalloc_internal_api.h"
@@ -62,8 +64,8 @@ typename std::iterator_traits<It>::value_type median(It first, It last) {
     }
 }
 
-static constexpr std::size_t MinThread = 1;
-static constexpr std::size_t MaxThread = 4;
+static constexpr std::uint8_t MinThread = 1;
+static constexpr std::uint8_t MaxThread = 4;
 
 //! Simple native parallel loop where each iteration is executed in a different thread
 template <typename Index, typename Body>
@@ -436,6 +438,81 @@ concept well_formed_instantiation = requires {
     typename Template<Types...>;
 };
 #endif // __TBB_CPP20_CONCEPTS_PRESENT
+
+class LifeTrackableObject {
+    using set_type = std::unordered_set<const LifeTrackableObject*>;
+    static set_type alive_objects;
+public:
+    LifeTrackableObject() {
+        alive_objects.insert(this);
+    }
+
+    LifeTrackableObject(const LifeTrackableObject&) {
+        alive_objects.insert(this);
+    }
+
+    LifeTrackableObject(LifeTrackableObject&&) {
+        alive_objects.insert(this);
+    }
+
+    LifeTrackableObject& operator=(const LifeTrackableObject&) = default;
+    LifeTrackableObject& operator=(LifeTrackableObject&&) = default;
+
+    ~LifeTrackableObject() {
+        alive_objects.erase(this);
+    }
+
+    static bool is_alive(const LifeTrackableObject& object) {
+        return is_alive(&object);
+    }
+
+    static bool is_alive(const LifeTrackableObject* object) {
+        return alive_objects.find(object) != alive_objects.end();
+    }
+
+    static const set_type& set() {
+        return alive_objects;
+    }
+};
+std::unordered_set<const LifeTrackableObject*> LifeTrackableObject::alive_objects{};
+
+template <typename T>
+class UninitializedStorage {
+    union {
+        T m_value;
+    };
+public:
+    UninitializedStorage() {}
+    ~UninitializedStorage() {}
+    T* operator&() { return &m_value; }
+};
+
+// if non-zero byte found, returns bad value offset plus 1
+inline size_t NonZero(void *ptr, size_t size)
+{
+    size_t words = size / sizeof(intptr_t);
+    size_t tail_sz = size % sizeof(intptr_t);
+    intptr_t *buf = (intptr_t*)ptr;
+    char *buf_tail = (char*)(buf+words);
+
+    intptr_t *word_it = std::find_if(buf, buf + words, [](intptr_t v) { return v != 0; });
+    if (word_it != buf + words) {
+        // find exact byte in non-zero word
+        buf_tail = (char*)word_it;
+        tail_sz = sizeof(intptr_t);
+    }
+    char *tail_it = std::find_if(buf_tail, buf_tail + tail_sz, [](char c) { return c != 0; });
+    if (tail_it != buf_tail + tail_sz) {
+        return (tail_it - (char*)ptr) + 1;
+    }
+    return 0;
+}
+
+template <typename T>
+T force_constant_odr_use(const T& value) {
+    volatile const T* addr = &value;
+    return *addr;
+}
 
 } // namespace utils
 

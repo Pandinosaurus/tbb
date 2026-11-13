@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2024 Intel Corporation
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -54,7 +54,7 @@ typedef tbb::flow::tagged_msg<size_t, int, char, double, odd_array_type, odder_a
 
 // test base of tagged_msg
 void TestWrapper() {
-    using tbb::detail::d1::Wrapper;
+    using tbb::detail::d2::Wrapper;
     Wrapper<int> wi(42);
     Wrapper<int> wic(23);
 
@@ -234,7 +234,7 @@ void RunTests() {
 
     try {
         int *ip = cast_to<int *>(i);
-        CHECK_MESSAGE( (false & (NULL!=ip)), "Error: non-array cast to pointer type.");
+        CHECK_MESSAGE( (false & (nullptr!=ip)), "Error: non-array cast to pointer type.");
     }
     catch(std::runtime_error &bc) {
         CHECK_MESSAGE( (0 == strcmp(bc.what(), "Illegal tagged_msg cast")), "Incorrect std:runtime_error");

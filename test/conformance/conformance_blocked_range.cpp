@@ -1,5 +1,6 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2025 Intel Corporation
+    Copyright (c) 2025 UXL Foundation Contributors
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -64,7 +65,7 @@ static void SerialTest() {
                 range_type r( i, j, k );
                 utils::AssertSameType( r.empty(), true );
                 utils::AssertSameType( range_type::size_type(), std::size_t() );
-                utils::AssertSameType( static_cast<range_type::const_iterator*>(0), static_cast<AbstractValueType*>(0) );
+                utils::AssertSameType( static_cast<range_type::const_iterator*>(nullptr), static_cast<AbstractValueType*>(nullptr) );
                 utils::AssertSameType( r.begin(), MakeAbstractValueType(0) );
                 utils::AssertSameType( r.end(), MakeAbstractValueType(0) );
                 CHECK( r.empty()==(y<=x));
@@ -133,13 +134,15 @@ TEST_CASE("blocked_range proportional splitting") {
 
     // Test proportional_split -> split conversion
     oneapi::tbb::blocked_range<int> copy(original);
-    oneapi::tbb::split s = oneapi::tbb::split(ps);
+    oneapi::tbb::split s = static_cast<oneapi::tbb::split>(ps);
     oneapi::tbb::blocked_range<int> splitted_copy(copy, s);
     CHECK(copy.size() == original.size() / 2);
     CHECK(splitted_copy.size() == copy.size());
 
 
-    int expected_first_end = original.begin() + ps.left() * (original.end() - original.begin()) / (ps.left() + ps.right());
+    int expected_first_end = static_cast<int>(
+        original.begin() + ps.left() * (original.end() - original.begin()) / (ps.left() + ps.right())
+    );
     utils::check_range_bounds_after_splitting(original, first, second, expected_first_end);
 }
 
@@ -162,4 +165,3 @@ TEST_CASE("Deduction guides") {
     static_assert(std::is_same<decltype(r3), decltype(r1)>::value);
 }
 #endif
-

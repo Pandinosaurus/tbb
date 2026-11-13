@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2024 Intel Corporation
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -22,10 +22,7 @@
 #if _WIN32||_WIN64
 #include <windows.h>
 #elif __APPLE__
-#include <mach/semaphore.h>
-#include <mach/task.h>
-#include <mach/mach_init.h>
-#include <mach/error.h>
+#include <dispatch/dispatch.h>
 #else
 #include <semaphore.h>
 #ifdef TBB_USE_DEBUG
@@ -35,23 +32,24 @@
 
 #include <atomic>
 
-#if __linux__ || __FreeBSD__ || __NetBSD__ || __OpenBSD__
+#if __unix__
+#if defined(__has_include)
+#define __TBB_has_include __has_include
+#else
+#define __TBB_has_include(x) 0
+#endif
 
 /* Futex definitions */
 #include <unistd.h>
+#if defined(__linux__) || __TBB_has_include(<sys/syscall.h>)
 #include <sys/syscall.h>
+#endif
 
 #if defined(SYS_futex)
 
 /* This section is included for Linux and some other systems that may support futexes.*/
 
 #define __TBB_USE_FUTEX 1
-
-#if defined(__has_include)
-#define __TBB_has_include __has_include
-#else
-#define __TBB_has_include(x) 0
-#endif
 
 /*
 If available, use typical headers where futex API is defined. While Linux and OpenBSD
@@ -87,7 +85,7 @@ the actual parameter values to match Linux: 0 for wait, 1 for wake.
 #endif
 
 #endif // SYS_futex
-#endif // __linux__ || __FreeBSD__ || __NetBSD__ || __OpenBSD__
+#endif // __unix__
 
 namespace tbb {
 namespace detail {
@@ -100,7 +98,11 @@ namespace r1 {
 #if __TBB_USE_FUTEX
 
 static inline int futex_wait( void *futex, int comparand ) {
-    int r = ::syscall(SYS_futex, futex, __TBB_FUTEX_WAIT, comparand, NULL, NULL, 0);
+#ifdef __OpenBSD__
+    int r = ::futex((volatile uint32_t *)futex, __TBB_FUTEX_WAIT, comparand, nullptr, nullptr);
+#else
+    int r = ::syscall(SYS_futex, futex, __TBB_FUTEX_WAIT, comparand, nullptr, nullptr, 0);
+#endif
 #if TBB_USE_ASSERT
     int e = errno;
     __TBB_ASSERT(r == 0 || r == EWOULDBLOCK || (r == -1 && (e == EAGAIN || e == EINTR)), "futex_wait failed.");
@@ -109,14 +111,18 @@ static inline int futex_wait( void *futex, int comparand ) {
 }
 
 static inline int futex_wakeup_one( void *futex ) {
-    int r = ::syscall(SYS_futex, futex, __TBB_FUTEX_WAKE, 1, NULL, NULL, 0);
+#ifdef __OpenBSD__
+    int r = ::futex((volatile uint32_t *)futex, __TBB_FUTEX_WAKE, 1 , nullptr, nullptr);
+#else
+    int r = ::syscall(SYS_futex, futex, __TBB_FUTEX_WAKE, 1, nullptr, nullptr, 0);
+#endif
     __TBB_ASSERT(r == 0 || r == 1, "futex_wakeup_one: more than one thread woken up?");
     return r;
 }
 
 // Additional possible methods that are not required right now
 // static inline int futex_wakeup_all( void *futex ) {
-//     int r = ::syscall( SYS_futex,futex,__TBB_FUTEX_WAKE,INT_MAX,NULL,NULL,0 );
+//     int r = ::syscall( SYS_futex,futex,__TBB_FUTEX_WAKE,INT_MAX,nullptr,nullptr,0 );
 //     __TBB_ASSERT( r>=0, "futex_wakeup_all: error in waking up threads" );
 //     return r;
 // }
@@ -137,11 +143,11 @@ public:
     //! wait/acquire
     void P() {WaitForSingleObjectEx( sem, INFINITE, FALSE );}
     //! post/release
-    void V() {ReleaseSemaphore( sem, 1, NULL );}
+    void V() {ReleaseSemaphore( sem, 1, nullptr);}
 private:
     HANDLE sem;
     void init_semaphore(size_t start_cnt_) {
-        sem = CreateSemaphoreEx( NULL, LONG(start_cnt_), max_semaphore_cnt, NULL, 0, SEMAPHORE_ALL_ACCESS );
+        sem = CreateSemaphoreEx( nullptr, LONG(start_cnt_), max_semaphore_cnt, nullptr, 0, SEMAPHORE_ALL_ACCESS );
     }
 };
 #elif __APPLE__
@@ -149,28 +155,18 @@ private:
 class semaphore : no_copy {
 public:
     //! ctor
-    semaphore(int start_cnt_ = 0) : sem(start_cnt_) { init_semaphore(start_cnt_); }
+    semaphore(int start_cnt_ = 0) { my_sem = dispatch_semaphore_create(start_cnt_); }
     //! dtor
-    ~semaphore() {
-        kern_return_t ret = semaphore_destroy( mach_task_self(), sem );
-        __TBB_ASSERT_EX( ret==err_none, NULL );
-    }
+    ~semaphore() { dispatch_release(my_sem); }
     //! wait/acquire
     void P() {
-        int ret;
-        do {
-            ret = semaphore_wait( sem );
-        } while( ret==KERN_ABORTED );
-        __TBB_ASSERT( ret==KERN_SUCCESS, "semaphore_wait() failed" );
+        std::intptr_t ret = dispatch_semaphore_wait(my_sem, DISPATCH_TIME_FOREVER);
+        __TBB_ASSERT_EX(ret == 0, "dispatch_semaphore_wait() failed");
     }
     //! post/release
-    void V() { semaphore_signal( sem ); }
+    void V() { dispatch_semaphore_signal(my_sem); }
 private:
-    semaphore_t sem;
-    void init_semaphore(int start_cnt_) {
-        kern_return_t ret = semaphore_create( mach_task_self(), &sem, SYNC_POLICY_FIFO, start_cnt_ );
-        __TBB_ASSERT_EX( ret==err_none, "failed to create a semaphore" );
-    }
+    dispatch_semaphore_t my_sem;
 };
 #else /* Linux/Unix */
 typedef uint32_t sem_count_t;
@@ -183,12 +179,12 @@ public:
     //! dtor
     ~semaphore() {
         int ret = sem_destroy( &sem );
-        __TBB_ASSERT_EX( !ret, NULL );
+        __TBB_ASSERT_EX( !ret, nullptr);
     }
     //! wait/acquire
     void P() {
         while( sem_wait( &sem )!=0 )
-            __TBB_ASSERT( errno==EINTR, NULL );
+            __TBB_ASSERT( errno==EINTR, nullptr);
     }
     //! post/release
     void V() { sem_post( &sem ); }
@@ -196,7 +192,7 @@ private:
     sem_t sem;
     void init_semaphore(int start_cnt_) {
         int ret = sem_init( &sem, /*shared among threads*/ 0, start_cnt_ );
-        __TBB_ASSERT_EX( !ret, NULL );
+        __TBB_ASSERT_EX( !ret, nullptr);
     }
 };
 #endif /* _WIN32||_WIN64 */
@@ -209,7 +205,7 @@ private:
 class binary_semaphore : no_copy {
 public:
     //! ctor
-    binary_semaphore() { my_sem = CreateEventEx( NULL, NULL, 0, EVENT_ALL_ACCESS );  }
+    binary_semaphore() { my_sem = CreateEventEx( nullptr, nullptr, 0, EVENT_ALL_ACCESS );  }
     //! dtor
     ~binary_semaphore() { CloseHandle( my_sem ); }
     //! wait/acquire
@@ -243,31 +239,7 @@ private:
 #endif /* !__TBB_USE_SRWLOCK */
 #elif __APPLE__
 //! binary_semaphore for concurrent monitor
-class binary_semaphore : no_copy {
-public:
-    //! ctor
-    binary_semaphore() : my_sem(0) {
-        kern_return_t ret = semaphore_create( mach_task_self(), &my_sem, SYNC_POLICY_FIFO, 0 );
-        __TBB_ASSERT_EX( ret==err_none, "failed to create a semaphore" );
-    }
-    //! dtor
-    ~binary_semaphore() {
-        kern_return_t ret = semaphore_destroy( mach_task_self(), my_sem );
-        __TBB_ASSERT_EX( ret==err_none, NULL );
-    }
-    //! wait/acquire
-    void P() {
-        int ret;
-        do {
-            ret = semaphore_wait( my_sem );
-        } while( ret==KERN_ABORTED );
-        __TBB_ASSERT( ret==KERN_SUCCESS, "semaphore_wait() failed" );
-    }
-    //! post/release
-    void V() { semaphore_signal( my_sem ); }
-private:
-    semaphore_t my_sem;
-};
+using binary_semaphore = semaphore;
 #else /* Linux/Unix */
 
 #if __TBB_USE_FUTEX
@@ -308,17 +280,17 @@ public:
     //! ctor
     binary_semaphore() {
         int ret = sem_init( &my_sem, /*shared among threads*/ 0, 0 );
-        __TBB_ASSERT_EX( !ret, NULL );
+        __TBB_ASSERT_EX( !ret, nullptr);
     }
     //! dtor
     ~binary_semaphore() {
         int ret = sem_destroy( &my_sem );
-        __TBB_ASSERT_EX( !ret, NULL );
+        __TBB_ASSERT_EX( !ret, nullptr);
     }
     //! wait/acquire
     void P() {
         while( sem_wait( &my_sem )!=0 )
-            __TBB_ASSERT( errno==EINTR, NULL );
+            __TBB_ASSERT( errno==EINTR, nullptr);
     }
     //! post/release
     void V() { sem_post( &my_sem ); }

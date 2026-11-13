@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2023 Intel Corporation
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -62,6 +62,10 @@ public:
             }
             if (locked) *locked = m_taken;
         }
+
+        scoped_lock(scoped_lock& other) = delete;
+        scoped_lock& operator=(scoped_lock&) = delete;
+
         ~scoped_lock() {
             if (m_taken) {
                 m_mutex.unlock();
@@ -75,7 +79,7 @@ inline void SpinWaitWhileEq(const std::atomic<intptr_t>& location, const intptr_
     tbb::detail::spin_wait_while_eq(location, value);
 }
 
-#if USE_PTHREAD && (__TBB_SOURCE_DIRECTLY_INCLUDED || __TBB_USE_DLOPEN_REENTRANCY_WORKAROUND)
+#if USE_PTHREAD && __TBB_SOURCE_DIRECTLY_INCLUDED
 
 inline void SpinWaitUntilEq(const std::atomic<intptr_t>& location, const intptr_t value) {
     tbb::detail::spin_wait_until_eq(location, value);

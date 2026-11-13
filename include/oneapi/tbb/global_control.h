@@ -1,5 +1,6 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2025 Intel Corporation
+    Copyright (c) 2025 UXL Foundation Contributors
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -18,38 +19,42 @@
 #define __TBB_global_control_H
 
 #include "detail/_config.h"
-#include "detail/_namespace_injection.h"
-#include "detail/_assert.h"
-#include "detail/_template_helpers.h"
-#include "detail/_exception.h"
 
-#if __TBB_SUPPORTS_WORKERS_WAITING_IN_TERMINATE
-#include <new> // std::nothrow_t
-#endif
+#include "detail/_assert.h"
+#include "detail/_attach.h"
+#include "detail/_exception.h"
+#include "detail/_namespace_injection.h"
+#include "detail/_template_helpers.h"
+
 #include <cstddef>
+#include <new> // std::nothrow_t
 
 namespace tbb {
 namespace detail {
 
 namespace d1 {
 class global_control;
-#if __TBB_SUPPORTS_WORKERS_WAITING_IN_TERMINATE
 class task_scheduler_handle;
-#endif
 }
 
 namespace r1 {
-void __TBB_EXPORTED_FUNC create(d1::global_control&);
-void __TBB_EXPORTED_FUNC destroy(d1::global_control&);
-std::size_t __TBB_EXPORTED_FUNC global_control_active_value(int);
+TBB_EXPORT void __TBB_EXPORTED_FUNC create(d1::global_control&);
+TBB_EXPORT void __TBB_EXPORTED_FUNC destroy(d1::global_control&);
+TBB_EXPORT std::size_t __TBB_EXPORTED_FUNC global_control_active_value(int);
 struct global_control_impl;
 struct control_storage_comparator;
-#if __TBB_SUPPORTS_WORKERS_WAITING_IN_TERMINATE
 void release_impl(d1::task_scheduler_handle& handle);
 bool finalize_impl(d1::task_scheduler_handle& handle);
-void __TBB_EXPORTED_FUNC get(d1::task_scheduler_handle&);
-bool __TBB_EXPORTED_FUNC finalize(d1::task_scheduler_handle&, std::intptr_t mode);
-#endif
+TBB_EXPORT void __TBB_EXPORTED_FUNC get(d1::task_scheduler_handle&);
+TBB_EXPORT bool __TBB_EXPORTED_FUNC finalize(d1::task_scheduler_handle&, std::intptr_t mode);
+
+//! Set assertion handler and return its previous value.
+//! The handler should not return. If it eventually returns, the behavior is runtime-undefined.
+TBB_EXPORT assertion_handler_type __TBB_EXPORTED_FUNC
+set_assertion_handler(assertion_handler_type new_handler) noexcept;
+
+//! Return the current assertion handler.
+TBB_EXPORT assertion_handler_type __TBB_EXPORTED_FUNC get_assertion_handler() noexcept;
 }
 
 namespace d1 {
@@ -60,11 +65,8 @@ public:
         max_allowed_parallelism,
         thread_stack_size,
         terminate_on_exception,
-#if __TBB_SUPPORTS_WORKERS_WAITING_IN_TERMINATE
         scheduler_handle, // not a public parameter
-#else
-        reserved1, // not a public parameter
-#endif
+        leave_policy,
         parameter_max // insert new parameters above this point
     };
 
@@ -85,6 +87,12 @@ public:
         r1::create(*this);
     }
 
+    //! Overload the constructor for enum types to avoid forcing users to cast them to size_t
+    template<typename T, typename = typename std::enable_if<std::is_enum<T>::value>::type>
+    global_control(parameter p, T value)
+        : global_control(p, static_cast<std::size_t>(value))
+    {}
+
     ~global_control() {
         __TBB_ASSERT(my_param < parameter_max, "Invalid parameter");
 #if __TBB_WIN8UI_SUPPORT && (_WIN32_WINNT < 0x0A00)
@@ -96,7 +104,6 @@ public:
     }
 
     static std::size_t active_value(parameter p) {
-        __TBB_ASSERT(p < parameter_max, "Invalid parameter");
         return r1::global_control_active_value((int)p);
     }
 
@@ -109,19 +116,26 @@ private:
     friend struct r1::control_storage_comparator;
 };
 
-#if __TBB_SUPPORTS_WORKERS_WAITING_IN_TERMINATE
 //! Finalization options.
 //! Outside of the class to avoid extensive friendship.
-static constexpr std::intptr_t release_nothrowing = 0;
-static constexpr std::intptr_t finalize_nothrowing = 1;
-static constexpr std::intptr_t finalize_throwing = 2;
+__TBB_GLOBAL_VAR constexpr std::intptr_t release_nothrowing = 0;
+__TBB_GLOBAL_VAR constexpr std::intptr_t finalize_nothrowing = 1;
+__TBB_GLOBAL_VAR constexpr std::intptr_t finalize_throwing = 2;
 
 //! User side wrapper for a task scheduler lifetime control object
 class task_scheduler_handle {
 public:
+    //! Creates an empty task_scheduler_handle
     task_scheduler_handle() = default;
+
+    //! Creates an attached instance of task_scheduler_handle
+    task_scheduler_handle(attach) {
+        r1::get(*this);
+    }
+
+    //! Release a reference if any
     ~task_scheduler_handle() {
-        release(*this);
+        release();
     }
 
     //! No copy
@@ -129,7 +143,7 @@ public:
     task_scheduler_handle& operator=(const task_scheduler_handle& other) = delete;
 
     //! Move only
-    task_scheduler_handle(task_scheduler_handle&& other) noexcept : m_ctl{nullptr} {
+    task_scheduler_handle(task_scheduler_handle&& other) noexcept {
         std::swap(m_ctl, other.m_ctl);
     }
     task_scheduler_handle& operator=(task_scheduler_handle&& other) noexcept {
@@ -137,21 +151,16 @@ public:
         return *this;
     };
 
+    //! Checks if the task_scheduler_handle is empty
     explicit operator bool() const noexcept {
         return m_ctl != nullptr;
     }
 
-    //! Get and active instance of task_scheduler_handle
-    static task_scheduler_handle get() {
-         task_scheduler_handle handle;
-         r1::get(handle);
-         return handle;
-    }
-
     //! Release the reference and deactivate handle
-    static void release(task_scheduler_handle& handle) {
-        if (handle.m_ctl != nullptr) {
-            r1::finalize(handle, release_nothrowing);
+    void release() {
+        if (m_ctl != nullptr) {
+            r1::finalize(*this, release_nothrowing);
+            m_ctl = nullptr;
         }
     }
 
@@ -160,32 +169,61 @@ private:
     friend bool r1::finalize_impl(task_scheduler_handle& handle);
     friend void __TBB_EXPORTED_FUNC r1::get(task_scheduler_handle&);
 
+    friend void finalize(task_scheduler_handle&);
+    friend bool finalize(task_scheduler_handle&, const std::nothrow_t&) noexcept;
+
     global_control* m_ctl{nullptr};
 };
 
 #if TBB_USE_EXCEPTIONS
 //! Waits for worker threads termination. Throws exception on error.
 inline void finalize(task_scheduler_handle& handle) {
-    r1::finalize(handle, finalize_throwing);
+    try_call([&] {
+        if (handle.m_ctl != nullptr) {
+            bool finalized = r1::finalize(handle, finalize_throwing);
+            __TBB_ASSERT_EX(finalized, "r1::finalize did not respect finalize_throwing ?");
+
+        }
+    }).on_completion([&] {
+        __TBB_ASSERT(!handle, "The handle should be empty after finalize");
+    });
 }
 #endif
 //! Waits for worker threads termination. Returns false on error.
 inline bool finalize(task_scheduler_handle& handle, const std::nothrow_t&) noexcept {
-    return r1::finalize(handle, finalize_nothrowing);
+    bool finalized = true;
+    if (handle.m_ctl != nullptr) {
+        finalized = r1::finalize(handle, finalize_nothrowing);
+    }
+    __TBB_ASSERT(!handle, "The handle should be empty after finalize");
+    return finalized;
 }
-#endif // __TBB_SUPPORTS_WORKERS_WAITING_IN_TERMINATE
 
 } // namespace d1
 } // namespace detail
 
 inline namespace v1 {
 using detail::d1::global_control;
-#if __TBB_SUPPORTS_WORKERS_WAITING_IN_TERMINATE
+using detail::d1::attach;
 using detail::d1::finalize;
 using detail::d1::task_scheduler_handle;
 using detail::r1::unsafe_wait;
-#endif
+
+using detail::r1::assertion_handler_type;
+using detail::r1::set_assertion_handler;
+using detail::r1::get_assertion_handler;
 } // namespace v1
+
+// Definitions in namespace ext are kept for compatibility
+// with code built against older oneTBB releases, where
+// the custom assertion handler was available only via the extension API
+namespace ext {
+inline namespace v1 {
+using ::tbb::detail::r1::assertion_handler_type;
+using ::tbb::detail::r1::set_assertion_handler;
+using ::tbb::detail::r1::get_assertion_handler;
+} // inline namespace v1
+} // namespace ext
 
 } // namespace tbb
 

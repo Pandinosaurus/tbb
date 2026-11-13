@@ -1,4 +1,4 @@
-# Copyright (c) 2020-2021 Intel Corporation
+# Copyright (c) 2020-2025 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 3.5.0...3.31.3)
 
 set(EXAMPLES_UI_MODE "con" CACHE STRING "EXAMPLES_UI_MODE")
 
@@ -121,6 +121,7 @@ if  (NOT _find_index EQUAL -1)
     elseif ("${EXAMPLES_UI_MODE}" STREQUAL "x")
         set_x_ui_project_settings()
     endif()
+    target_compile_options(UI_LIB_${PROJECT_NAME} PRIVATE ${TBB_CXX_STD_FLAG})
 endif()
 
 unset(_available_ui_modes)

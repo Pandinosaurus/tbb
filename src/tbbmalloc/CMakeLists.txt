@@ -1,4 +1,5 @@
-# Copyright (c) 2020-2021 Intel Corporation
+# Copyright (c) 2020-2024 Intel Corporation
+# Copyright (c) 2025 UXL Foundation Contributors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,16 +20,24 @@ add_library(tbbmalloc
     large_objects.cpp
     tbbmalloc.cpp
     ../tbb/itt_notify.cpp)
+    
+if (WIN32)
+    target_sources(tbbmalloc PRIVATE tbbmalloc.rc)
+endif()
 
 add_library(TBB::tbbmalloc ALIAS tbbmalloc)
 
 target_compile_definitions(tbbmalloc
-                           PUBLIC
-                           $<$<CONFIG:DEBUG>:TBB_USE_DEBUG>
-                           PRIVATE
-                           __TBBMALLOC_BUILD)
+    PUBLIC
+    $<$<CONFIG:DEBUG>:TBB_USE_DEBUG>
+    PRIVATE
+    # Disable implicit assertions in C++ headers to avoid dependency on libstdc++
+    _GLIBCXX_NO_ASSERTIONS
+    __TBBMALLOC_BUILD
+    $<$<NOT:$<BOOL:${BUILD_SHARED_LIBS}>>:__TBB_DYNAMIC_LOAD_ENABLED=0>
+    $<$<NOT:$<BOOL:${BUILD_SHARED_LIBS}>>:__TBB_SOURCE_DIRECTLY_INCLUDED=1>)
 
-if (NOT ("${CMAKE_SYSTEM_PROCESSOR}" MATCHES "(armv7-a|aarch64|mips|arm64)" OR
+if (NOT ("${CMAKE_SYSTEM_PROCESSOR}" MATCHES "(armv7-a|aarch64|mips|arm64|riscv)" OR
          "${CMAKE_OSX_ARCHITECTURES}" MATCHES "arm64" OR
          WINDOWS_STORE OR
          TBB_WINDOWS_DRIVER OR
@@ -39,34 +48,63 @@ endif()
 target_include_directories(tbbmalloc
     PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../include>
-    $<INSTALL_INTERFACE:include>)
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
 # TODO: fix warnings
 if (MSVC)
     # signed unsigned mismatch, declaration hides class member
-    set(TBB_WARNING_SUPPRESS ${TBB_WARNING_SUPPRESS} /wd4267 /wd4244 /wd4245 /wd4018 /wd4458)
+    set(TBB_WARNING_SUPPRESS ${TBB_WARNING_SUPPRESS} /wd4245 /wd4458)
 endif()
 
-# TODO: add ${TBB_WARNING_LEVEL} and fix problems
 target_compile_options(tbbmalloc
     PRIVATE
     ${TBB_CXX_STD_FLAG} # TODO: consider making it PUBLIC.
     ${TBB_MMD_FLAG}
     ${TBB_DSE_FLAG}
+    ${TBB_WARNING_LEVEL}
     ${TBB_WARNING_SUPPRESS}
     ${TBB_LIB_COMPILE_FLAGS}
     ${TBBMALLOC_LIB_COMPILE_FLAGS}
     ${TBB_COMMON_COMPILE_FLAGS}
 )
 
+if (NOT MSVC AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|IntelLLVM")
+    # _GLIBCXX_NO_ASSERTIONS does not override an explicit _GLIBCXX_ASSERTIONS
+    # (e.g. from -D_GLIBCXX_ASSERTIONS or -Wp,-D_GLIBCXX_ASSERTIONS in CXXFLAGS,
+    # or from GCC's -fhardened), so undefine it as well. -Wp is used so that it
+    # also comes after a -Wp,-D passed in CXXFLAGS. Not covered: libstdc++
+    # re-enables _GLIBCXX_ASSERTIONS when _GLIBCXX_DEBUG is defined.
+    target_compile_options(tbbmalloc PRIVATE -Wp,-U_GLIBCXX_ASSERTIONS)
+
+    # Dropping the assertions is intentional, so silence GCC's -Whardened
+    # warning about it, which -Werror (TBB_STRICT) would turn into an error.
+    include(CheckCXXCompilerFlag)
+    check_cxx_compiler_flag(-Wno-hardened TBB_HAS_WNO_HARDENED)
+    if (TBB_HAS_WNO_HARDENED)
+        target_compile_options(tbbmalloc PRIVATE -Wno-hardened)
+    endif()
+endif()
+
+enable_language(C)
+
 # Avoid use of target_link_libraries here as it changes /DEF option to \DEF on Windows.
 set_target_properties(tbbmalloc PROPERTIES
     DEFINE_SYMBOL ""
     VERSION ${TBBMALLOC_BINARY_VERSION}.${TBB_BINARY_MINOR_VERSION}
     SOVERSION ${TBBMALLOC_BINARY_VERSION}
-    LINK_FLAGS ${TBB_LINK_DEF_FILE_FLAG}${CMAKE_CURRENT_SOURCE_DIR}/def/${TBB_DEF_FILE_PREFIX}-tbbmalloc.def
-    LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/def/${TBB_DEF_FILE_PREFIX}-tbbmalloc.def
+    LINKER_LANGUAGE C
 )
+
+tbb_handle_ipo(tbbmalloc)
+
+if (TBB_DEF_FILE_PREFIX) # If there's no prefix, assume we're using export directives
+    set_target_properties(tbbmalloc PROPERTIES
+        LINK_FLAGS "${TBB_LINK_DEF_FILE_FLAG}\"${CMAKE_CURRENT_SOURCE_DIR}/def/${TBB_DEF_FILE_PREFIX}-tbbmalloc.def\""
+        LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/def/${TBB_DEF_FILE_PREFIX}-tbbmalloc.def"
+    )
+endif()
+
+set(CMAKE_CXX_IMPLICIT_LINK_LIBRARIES "")
 
 # Prefer using target_link_options instead of target_link_libraries to specify link options because
 # target_link_libraries may incorrectly handle some options (on Windows, for example).
@@ -91,5 +129,15 @@ target_link_libraries(tbbmalloc
     ${TBB_COMMON_LINK_LIBS}
 )
 
-tbb_install_target(tbbmalloc)
+if(TBB_BUILD_APPLE_FRAMEWORKS)
+    set_target_properties(tbbmalloc PROPERTIES 
+        FRAMEWORK TRUE
+        FRAMEWORK_VERSION ${TBBMALLOC_BINARY_VERSION}.${TBB_BINARY_MINOR_VERSION}
+        XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER com.intel.tbbmalloc
+        MACOSX_FRAMEWORK_IDENTIFIER com.intel.tbbmalloc
+        MACOSX_FRAMEWORK_BUNDLE_VERSION ${TBBMALLOC_BINARY_VERSION}.${TBB_BINARY_MINOR_VERSION}
+        MACOSX_FRAMEWORK_SHORT_VERSION_STRING ${TBBMALLOC_BINARY_VERSION}
+    )
+endif()
 
+tbb_install_target(tbbmalloc)

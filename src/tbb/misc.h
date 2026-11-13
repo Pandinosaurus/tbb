@@ -1,5 +1,6 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2024 Intel Corporation
+    Copyright (c) 2026 UXL Foundation Contributors
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -20,12 +21,10 @@
 #include "oneapi/tbb/detail/_config.h"
 #include "oneapi/tbb/detail/_assert.h"
 #include "oneapi/tbb/detail/_utils.h"
-
-#if __TBB_ARENA_BINDING
 #include "oneapi/tbb/info.h"
-#endif /*__TBB_ARENA_BINDING*/
+#include "tcm.h"
 
-#if __linux__ || __FreeBSD__
+#if __unix__
 #include <sys/param.h>  // __FreeBSD_version
 #if __FreeBSD_version >= 701000
 #include <sys/cpuset.h>
@@ -44,20 +43,23 @@ namespace tbb {
 namespace detail {
 namespace r1 {
 
+#if !__TBBMALLOC_BUILD && !__TBBMALLOCPROXY_BUILD
+bool try_call_user_handler_on_exception(const char* comment) noexcept;
+#if !TBB_USE_EXCEPTIONS
+void throw_for_noexcept_default(const char* comment);
+#endif
+#endif
+
 void runtime_warning(const char* format, ... );
 
-#if __TBB_ARENA_BINDING
 class task_arena;
 class task_scheduler_observer;
-#endif /*__TBB_ARENA_BINDING*/
 
 const std::size_t MByte = 1024*1024;
 
-#if __TBB_WIN8UI_SUPPORT && (_WIN32_WINNT < 0x0A00)
-// In Win8UI mode (Windows 8 Store* applications), TBB uses a thread creation API
-// that does not allow to specify the stack size.
-// Still, the thread stack size value, either explicit or default, is used by the scheduler.
-// So here we set the default value to match the platform's default of 1MB.
+#if __TBB_USE_WINAPI
+// The Microsoft Documentation about Thread Stack Size states that
+// "The default stack reservation size used by the linker is 1 MB"
 const std::size_t ThreadStackSize = 1*MByte;
 #else
 const std::size_t ThreadStackSize = (sizeof(uintptr_t) <= 4 ? 2 : 4 )*MByte;
@@ -196,7 +198,7 @@ T1 atomic_update(std::atomic<T1>& dst, T1 newValue, Pred compare) {
         basic_mask_t* threadMask;
         int is_changed;
     public:
-        affinity_helper() : threadMask(NULL), is_changed(0) {}
+        affinity_helper() : threadMask(nullptr), is_changed(0) {}
         ~affinity_helper();
         void protect_affinity_mask( bool restore_process_mask  );
         void dismiss();
@@ -206,7 +208,6 @@ T1 atomic_update(std::atomic<T1>& dst, T1 newValue, Pred compare) {
     class affinity_helper : no_copy {
     public:
         void protect_affinity_mask( bool ) {}
-        void dismiss() {}
     };
     inline void destroy_process_mask(){}
 #endif /* __TBB_USE_OS_AFFINITY_SYSCALL */
@@ -214,19 +215,20 @@ T1 atomic_update(std::atomic<T1>& dst, T1 newValue, Pred compare) {
 struct cpu_features_type {
     bool rtm_enabled{false};
     bool waitpkg_enabled{false};
+    bool hybrid{false};
 };
 
 void detect_cpu_features(cpu_features_type& cpu_features);
 
-#if __TBB_ARENA_BINDING
 class binding_handler;
 
 binding_handler* construct_binding_handler(int slot_num, int numa_id, int core_type_id, int max_threads_per_core);
 void destroy_binding_handler(binding_handler* handler_ptr);
 void apply_affinity_mask(binding_handler* handler_ptr, int slot_num);
 void restore_affinity_mask(binding_handler* handler_ptr, int slot_num);
+tcm_cpu_mask_t get_affinity_mask(binding_handler* handler_ptr);
 
-#endif /*__TBB_ARENA_BINDING*/
+const int* get_numa_nodes_indexes();
 
 // RTM specific section
 // abort code for mutexes that detect a conflict with another thread.
@@ -281,6 +283,14 @@ static inline unsigned char is_in_transaction() {
 #endif
 }
 #endif // TBB_USE_ASSERT
+
+#if TBB_USE_EXCEPTIONS
+/*[[noreturn]]*/void do_throw_noexcept(void (*throw_exception)()) noexcept;
+
+#if __TBB_BUILD
+/*[[noreturn]]*/void terminate_on_user_exception() noexcept;
+#endif // __TBB_BUILD
+#endif // TBB_USE_EXCEPTIONS
 
 } // namespace r1
 } // namespace detail

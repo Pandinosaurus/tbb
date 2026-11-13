@@ -1,4 +1,4 @@
-# Copyright (c) 2020-2021 Intel Corporation
+# Copyright (c) 2020-2025 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -31,10 +31,20 @@ if (NOT TBB_STRICT AND COMMAND tbb_remove_compile_flag)
     tbb_remove_compile_flag(-Werror)
 endif()
 
-# Enable Intel(R) Transactional Synchronization Extensions (-mrtm) on relevant processors
-if (NOT "${CMAKE_OSX_ARCHITECTURES}" MATCHES "^arm64$" AND CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64|AMD64)") # OSX systems are 64-bit only
-    set(TBB_COMMON_COMPILE_FLAGS ${TBB_COMMON_COMPILE_FLAGS} -mrtm)
+# Enable Intel(R) Transactional Synchronization Extensions (-mrtm) and WAITPKG instructions support (-mwaitpkg) on relevant processors
+if (CMAKE_OSX_ARCHITECTURES)
+    set(_tbb_target_architectures "${CMAKE_OSX_ARCHITECTURES}")
+else()
+    set(_tbb_target_architectures "${CMAKE_SYSTEM_PROCESSOR}")
 endif()
+if ("${_tbb_target_architectures}" MATCHES "(x86_64|amd64|AMD64)") # OSX systems are 64-bit only
+    set(TBB_COMMON_COMPILE_FLAGS ${TBB_COMMON_COMPILE_FLAGS} -mrtm $<$<NOT:$<VERSION_LESS:${CMAKE_CXX_COMPILER_VERSION},12.0>>:-mwaitpkg>)
+endif()
+unset(_tbb_target_architectures)
+
+if (TBB_FILE_TRIM AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 10 AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Intel")
+    set(TBB_COMMON_COMPILE_FLAGS ${TBB_COMMON_COMPILE_FLAGS} -ffile-prefix-map=${NATIVE_TBB_PROJECT_ROOT_DIR}/= -ffile-prefix-map=${NATIVE_TBB_RELATIVE_BIN_PATH}/=)
+endif ()
 
 # TBB malloc settings
 set(TBBMALLOC_LIB_COMPILE_FLAGS -fno-rtti -fno-exceptions)

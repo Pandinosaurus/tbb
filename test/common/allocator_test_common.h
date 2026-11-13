@@ -1,5 +1,6 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2022 Intel Corporation
+    Copyright (c) 2026 UXL Foundation Contributors
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -207,6 +208,19 @@ void TestAllocatorExceptions(A& a) {
     }
     REQUIRE_MESSAGE(exception_caught, "allocate expected to throw bad_alloc");
     a.deallocate(p1, too_big);
+
+    exception_caught = false;
+    // Test handling the overflow while calculating n * sizeof(T)
+    if (sizeof(T) > 1) {
+        std::size_t max_size = ~std::size_t(0) / sizeof(T);
+        std::size_t allocate_size = max_size + 1;
+        try {
+            p1 = a.allocate(allocate_size);
+        } catch (std::bad_array_new_length&) {
+            exception_caught = true;
+        }
+        REQUIRE_MESSAGE(exception_caught, "allocate expected to throw bad_array_new_length on overflow");
+    }
 #endif // TBB_USE_EXCEPTIONS
     utils::suppress_unused_warning(a);
 }
@@ -247,14 +261,14 @@ struct Body: utils::NoAssign {
         for(std::size_t j=0; j < size * sizeof(value_type); ++j)
             REQUIRE_MESSAGE(s[j] == PseudoRandomValue(i, t), "Thread safety test failed");
         a.deallocate(array[i], size);
-        array[i] = 0;
+        array[i] = nullptr;
     }
 
     void operator()(std::size_t thread_id) const {
         pointer_type array[256];
 
         for(std::size_t k = 0; k < 256; ++k)
-            array[k] = 0;
+            array[k] = nullptr;
         for(std::size_t k = 0; k < max_k; ++k) {
             std::size_t i = static_cast<unsigned char>(PseudoRandomValue(k, thread_id));
             if(!array[i]) check_allocate(array, i, thread_id);
@@ -293,6 +307,7 @@ void TestAllocator(TestName name, const Allocator &a = Allocator()) {
     #endif
 
     NumberOfFoo = 0;
+    Allocator a_cpy(a);
     AllocatorFooChar a1(a);
     AllocatorFooDouble a2(a);
     AllocatorFooInt b1(a1);
@@ -300,6 +315,7 @@ void TestAllocator(TestName name, const Allocator &a = Allocator()) {
 
     switch(name) {
     case Comparison:
+        REQUIRE(a_cpy == a);
         REQUIRE(a1 == b1);
         REQUIRE(!(a2 != b2));
         break;

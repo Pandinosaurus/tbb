@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2025 Intel Corporation
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -23,11 +23,14 @@
 #include "common/utils_assert.h"
 #include "tbb/scalable_allocator.h"
 
-#if _WIN32||_WIN64
 extern "C" {
+#if _WIN32||_WIN64
     extern __declspec(dllexport) void callDll();
-}
+#else
+    extern __TBB_EXPORT void callDll();
+    extern __TBB_EXPORT int main();
 #endif
+}
 
 extern "C" void callDll()
 {
@@ -36,18 +39,22 @@ extern "C" void callDll()
 
     for (int i=0; i<NUM; i++) {
         ptrs[i] = scalable_malloc(i*1024);
-        ASSERT(ptrs[i], NULL);
+        ASSERT(ptrs[i], nullptr);
     }
     for (int i=0; i<NUM; i++)
         scalable_free(ptrs[i]);
 }
 
-int main() {}
+extern "C" int main() {
+    return 0;
+}
 
 
 #else // _USRDLL
+#include "common/config.h"
 // FIXME: fix the test to support Windows* 8 Store Apps mode.
-#if !__TBB_WIN8UI_SUPPORT
+// For sanitizers, it fails because RUNPATH is lost: https://github.com/google/sanitizers/issues/1219
+#if !__TBB_WIN8UI_SUPPORT && !(__GNUC__ && __GNUC__ < 10 && __TBB_USE_SANITIZERS) && __TBB_DYNAMIC_LOAD_ENABLED
 
 #define __TBB_NO_IMPLICIT_LINKAGE 1
 #include "common/test.h"
@@ -56,6 +63,7 @@ int main() {}
 #include "common/utils_report.h"
 #include "common/memory_usage.h"
 #include "common/spin_barrier.h"
+
 
 class UseDll {
     utils::FunctionAddress run;
@@ -143,6 +151,5 @@ TEST_CASE("use test as lib") {
         }
     }
 }
-
-#endif /* __TBB_WIN8UI_SUPPORT */
+#endif /* Unsupported configurations */
 #endif // _USRDLL

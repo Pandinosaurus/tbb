@@ -1,5 +1,6 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2024 Intel Corporation
+    Copyright (c) 2026 UXL Foundation Contributors
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -50,6 +51,7 @@
 #if MALLOC_CHECK_RECURSION
 #include <new>        /* for placement new */
 #endif
+#include <limits>               // for std::numeric_limits
 #include "oneapi/tbb/scalable_allocator.h"
 #include "tbbmalloc_internal_api.h"
 
@@ -67,7 +69,7 @@
 #define TRACEF(x) ((void)0)
 #endif /* MALLOC_TRACE */
 
-#define ASSERT_TEXT NULL
+#define ASSERT_TEXT nullptr
 
 #define COLLECT_STATISTICS ( MALLOC_DEBUG && MALLOCENV_COLLECT_STATISTICS )
 #ifndef USE_INTERNAL_TID
@@ -102,9 +104,13 @@ void suppress_unused_warning( const T& ) {}
 /*
  * Default huge page size
  */
+#if defined __loongarch64
+static const size_t HUGE_PAGE_SIZE = 32 * 1024 * 1024;
+#else
 static const size_t HUGE_PAGE_SIZE = 2 * 1024 * 1024;
+#endif
 
-/********** End of global default constatns *********/
+/********** End of global default constants *********/
 
 /********** Various numeric parameters controlling allocations ********/
 
@@ -193,22 +199,32 @@ protected:
             mask[i].fetch_and(~(1ULL << pos));
         }
     }
-    int getMinTrue(unsigned startIdx) const {
+    int getMinTrue(int startIndex) const {
+        MALLOC_ASSERT(startIndex >= 0, ASSERT_TEXT);
+        const unsigned startIdx = (unsigned)startIndex;
         unsigned idx = startIdx / WORD_LEN;
         int pos;
 
         if (startIdx % WORD_LEN) {
             // only interested in part of a word, clear bits before startIdx
             pos = WORD_LEN - startIdx % WORD_LEN;
-            uintptr_t actualMask = mask[idx].load(std::memory_order_relaxed) & (((uintptr_t)1<<pos) - 1);
+            uintptr_t actualMask =
+                mask[idx].load(std::memory_order_relaxed) & (((uintptr_t) 1 << pos) - 1);
             idx++;
-            if (-1 != (pos = BitScanRev(actualMask)))
-                return idx*WORD_LEN - pos - 1;
+            pos = BitScanRev(actualMask);
+            if (-1 != pos) {
+                const int result = idx * WORD_LEN - pos - 1;
+                MALLOC_ASSERT(0 <= result && (unsigned)result < NUM, ASSERT_TEXT);
+                return result;
+            }
         }
 
         while (idx<SZ)
-            if (-1 != (pos = BitScanRev(mask[idx++].load(std::memory_order_relaxed))))
-                return idx*WORD_LEN - pos - 1;
+            if (-1 != (pos = BitScanRev(mask[idx++].load(std::memory_order_relaxed)))) {
+                const int result = idx * WORD_LEN - pos - 1;
+                MALLOC_ASSERT(0 <= result && (unsigned)result < NUM, ASSERT_TEXT);
+                return result;
+            }
         return -1;
     }
 public:
@@ -219,7 +235,7 @@ template<unsigned NUM>
 class BitMaskMin : public BitMaskBasic<NUM> {
 public:
     void set(size_t idx, bool val) { BitMaskBasic<NUM>::set(idx, val); }
-    int getMinTrue(unsigned startIdx) const {
+    int getMinTrue(int startIdx) const {
         return BitMaskBasic<NUM>::getMinTrue(startIdx);
     }
 };
@@ -228,9 +244,13 @@ template<unsigned NUM>
 class BitMaskMax : public BitMaskBasic<NUM> {
 public:
     void set(size_t idx, bool val) {
+        MALLOC_ASSERT(NUM >= idx + 1, ASSERT_TEXT);
+
         BitMaskBasic<NUM>::set(NUM - 1 - idx, val);
     }
-    int getMaxTrue(unsigned startIdx) const {
+    int getMaxTrue(int startIdx) const {
+        MALLOC_ASSERT((int)NUM >= startIdx + 1, ASSERT_TEXT);
+
         int p = BitMaskBasic<NUM>::getMinTrue(NUM-startIdx-1);
         return -1==p? -1 : (int)NUM - 1 - p;
     }
@@ -253,7 +273,7 @@ public:
     void unregisterThread(TLSRemote *tls);
     bool cleanup(bool cleanOnlyUnused);
     void markUnused();
-    void reset() { head = NULL; }
+    void reset() { head = nullptr; }
 };
 
 class LifoList {
@@ -288,31 +308,31 @@ public:
 /* Large objects entities */
 #include "large_objects.h"
 
-// select index size for BackRefMaster based on word size: default is uint32_t,
+// select index size for BackRefMain based on word size: default is uint32_t,
 // uint16_t for 32-bit platforms
 template<bool>
-struct MasterIndexSelect {
-    typedef uint32_t master_type;
+struct MainIndexSelect {
+    typedef uint32_t main_type;
 };
 
 template<>
-struct MasterIndexSelect<false> {
-    typedef uint16_t master_type;
+struct MainIndexSelect<false> {
+    typedef uint16_t main_type;
 };
 
 class BackRefIdx { // composite index to backreference array
 public:
-    typedef MasterIndexSelect<4 < sizeof(uintptr_t)>::master_type master_t;
+    typedef MainIndexSelect<4 < sizeof(uintptr_t)>::main_type main_t;
 private:
-    static const master_t invalid = ~master_t(0);
-    master_t master;      // index in BackRefMaster
+    static const main_t invalid = ~main_t(0);
+    main_t main;      // index in BackRefMain
     uint16_t largeObj:1;  // is this object "large"?
     uint16_t offset  :15; // offset from beginning of BackRefBlock
 public:
-    BackRefIdx() : master(invalid), largeObj(0), offset(0) {}
-    bool isInvalid() const { return master == invalid; }
+    BackRefIdx() : main(invalid), largeObj(0), offset(0) {}
+    bool isInvalid() const { return main == invalid; }
     bool isLargeObject() const { return largeObj; }
-    master_t getMaster() const { return master; }
+    main_t getMain() const { return main; }
     uint16_t getOffset() const { return offset; }
 
 #if __TBB_USE_THREAD_SANITIZER
@@ -320,7 +340,7 @@ public:
     __attribute__((no_sanitize("thread")))
      BackRefIdx dereference(const BackRefIdx* ptr) {
         BackRefIdx idx;
-        idx.master = ptr->master;
+        idx.main = ptr->main;
         idx.largeObj = ptr->largeObj;
         idx.offset = ptr->offset;
         return idx;
@@ -339,7 +359,14 @@ public:
 // Block header is used during block coalescing
 // and must be preserved in used blocks.
 class BlockI {
+#if __clang__ && !__INTEL_COMPILER
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Wunused-private-field"
+#endif
     intptr_t     blockState[2];
+#if __clang__ && !__INTEL_COMPILER
+    #pragma clang diagnostic pop // "-Wunused-private-field"
+#endif
 };
 
 struct LargeMemoryBlock : public BlockI {
@@ -440,31 +467,31 @@ private:
     void parseSystemMemInfo() {
         bool hpAvailable  = false;
         bool thpAvailable = false;
-        unsigned long long hugePageSize = 0;
+        long long hugePageSize = -1;
 
-#if __linux__
+#if __unix__
         // Check huge pages existence
-        unsigned long long meminfoHugePagesTotal = 0;
+        long long meminfoHugePagesTotal = 0;
 
         parseFileItem meminfoItems[] = {
             // Parse system huge page size
-            { "Hugepagesize: %llu kB", hugePageSize },
+            { "Hugepagesize: %lld kB", hugePageSize },
             // Check if there are preallocated huge pages on the system
             // https://www.kernel.org/doc/Documentation/vm/hugetlbpage.txt
-            { "HugePages_Total: %llu", meminfoHugePagesTotal } };
+            { "HugePages_Total: %lld", meminfoHugePagesTotal } };
 
         parseFile</*BUFF_SIZE=*/100>("/proc/meminfo", meminfoItems);
 
         // Double check another system information regarding preallocated
         // huge pages if there are no information in /proc/meminfo
-        unsigned long long vmHugePagesTotal = 0;
+        long long vmHugePagesTotal = 0;
 
-        parseFileItem vmItem[] = { { "%llu", vmHugePagesTotal } };
+        parseFileItem vmItem[] = { { "%lld", vmHugePagesTotal } };
 
         // We parse a counter number, it can't be huge
         parseFile</*BUFF_SIZE=*/100>("/proc/sys/vm/nr_hugepages", vmItem);
 
-        if (meminfoHugePagesTotal > 0 || vmHugePagesTotal > 0) {
+        if (hugePageSize > -1 && (meminfoHugePagesTotal > 0 || vmHugePagesTotal > 0)) {
             MALLOC_ASSERT(hugePageSize != 0, "Huge Page size can't be zero if we found preallocated.");
 
             // Any non zero value clearly states that there are preallocated
@@ -473,11 +500,11 @@ private:
         }
 
         // Check if there is transparent huge pages support on the system
-        unsigned long long thpPresent = 'n';
+        long long thpPresent = 'n';
         parseFileItem thpItem[] = { { "[alwa%cs] madvise never\n", thpPresent } };
         parseFile</*BUFF_SIZE=*/100>("/sys/kernel/mm/transparent_hugepage/enabled", thpItem);
 
-        if (thpPresent == 'y') {
+        if (hugePageSize > -1 && thpPresent == 'y') {
             MALLOC_ASSERT(hugePageSize != 0, "Huge Page size can't be zero if we found thp existence.");
             thpAvailable = true;
         }
@@ -485,7 +512,11 @@ private:
         MALLOC_ASSERT(!pageSize, "Huge page size can't be set twice. Double initialization.");
 
         // Initialize object variables
-        pageSize       = hugePageSize * 1024; // was read in KB from meminfo
+        if (hugePageSize > -1) {
+            pageSize = (size_t)hugePageSize * 1024; // was read in KB from meminfo
+        } else {
+            pageSize = 0;
+        }
         isHPAvailable  = hpAvailable;
         isTHPAvailable = thpAvailable;
     }
@@ -569,6 +600,9 @@ struct ExtMemoryPool {
                       fixedPool;
     TLSKey            tlsPointerKey;  // per-pool TLS key
 
+    std::atomic<int> softCachesCleanupInProgress;
+    std::atomic<int> hardCachesCleanupInProgress;
+
     bool init(intptr_t poolId, rawAllocType rawAlloc, rawFreeType rawFree,
               size_t granularity, bool keepAllMemory, bool fixedPool);
     bool initTLS();
@@ -579,7 +613,7 @@ struct ExtMemoryPool {
      // true if something has been released
     bool softCachesCleanup();
     bool releaseAllLocalCaches();
-    bool hardCachesCleanup();
+    bool hardCachesCleanup(bool wait);
     void *remap(void *ptr, size_t oldSize, size_t newSize, size_t alignment);
     bool reset() {
         loc.reset();
@@ -638,7 +672,7 @@ class RecursiveMallocCallProtector {
     // pointer to an automatic data of holding thread
     static std::atomic<void*> autoObjPtr;
     static MallocMutex rmc_mutex;
-    static pthread_t   owner_thread;
+    static std::atomic<pthread_t> owner_thread;
 /* Under FreeBSD 8.0 1st call to any pthread function including pthread_self
    leads to pthread initialization, that causes malloc calls. As 1st usage of
    RecursiveMallocCallProtector can be before pthread initialized, pthread calls
@@ -660,19 +694,18 @@ class RecursiveMallocCallProtector {
 
     MallocMutex::scoped_lock* lock_acquired;
     char scoped_lock_space[sizeof(MallocMutex::scoped_lock)+1];
-
-    static uintptr_t absDiffPtr(void *x, void *y) {
-        uintptr_t xi = (uintptr_t)x, yi = (uintptr_t)y;
-        return xi > yi ? xi - yi : yi - xi;
-    }
+    
 public:
-
-    RecursiveMallocCallProtector() : lock_acquired(NULL) {
+    RecursiveMallocCallProtector() : lock_acquired(nullptr) {
         lock_acquired = new (scoped_lock_space) MallocMutex::scoped_lock( rmc_mutex );
         if (canUsePthread)
-            owner_thread = pthread_self();
+            owner_thread.store(pthread_self(), std::memory_order_relaxed);
         autoObjPtr.store(&scoped_lock_space, std::memory_order_relaxed);
     }
+
+    RecursiveMallocCallProtector(RecursiveMallocCallProtector&) = delete;
+    RecursiveMallocCallProtector& operator=(RecursiveMallocCallProtector) = delete;
+
     ~RecursiveMallocCallProtector() {
         if (lock_acquired) {
             autoObjPtr.store(nullptr, std::memory_order_relaxed);
@@ -685,7 +718,7 @@ public:
         // Some thread has an active recursive call protector; check if the current one.
         // Exact pthread_self based test
         if (canUsePthread) {
-            if (pthread_equal( owner_thread, pthread_self() )) {
+            if (pthread_equal( owner_thread.load(std::memory_order_relaxed), pthread_self() )) {
                 mallocRecursionDetected = true;
                 return true;
             } else
@@ -694,7 +727,11 @@ public:
         // inexact stack size based test
         const uintptr_t threadStackSz = 2*1024*1024;
         int dummy;
-        return absDiffPtr(autoObjPtr.load(std::memory_order_relaxed), &dummy)<threadStackSz;
+
+        uintptr_t xi = (uintptr_t)autoObjPtr.load(std::memory_order_relaxed), yi = (uintptr_t)&dummy;
+        uintptr_t diffPtr = xi > yi ? xi - yi : yi - xi;
+
+        return diffPtr < threadStackSz;
     }
 
 /* The function is called on 1st scalable_malloc call to check if malloc calls
@@ -706,7 +743,7 @@ public:
    is already on, so can do it. */
             if (!canUsePthread) {
                 canUsePthread = true;
-                owner_thread = pthread_self();
+                owner_thread.store(pthread_self(), std::memory_order_relaxed);
             }
 #endif
             free(malloc(1));
@@ -726,8 +763,8 @@ public:
 
 unsigned int getThreadId();
 
-bool initBackRefMaster(Backend *backend);
-void destroyBackRefMaster(Backend *backend);
+bool initBackRefMain(Backend *backend);
+void destroyBackRefMain(Backend *backend);
 void removeBackRef(BackRefIdx backRefIdx);
 void setBackRef(BackRefIdx backRefIdx, void *newPtr);
 void *getBackRef(BackRefIdx backRefIdx);

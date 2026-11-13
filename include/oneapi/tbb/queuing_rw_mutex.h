@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2022 Intel Corporation
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -46,7 +46,7 @@ public:
         create_itt_sync(this, "tbb::queuing_rw_mutex", "");
     }
 
-    //! Destructor asserts if the mutex is acquired, i.e. q_tail is non-NULL
+    //! Destructor asserts if the mutex is acquired, i.e. q_tail is non-null
     ~queuing_rw_mutex() {
         __TBB_ASSERT(q_tail.load(std::memory_order_relaxed) == nullptr, "destruction of an acquired mutex");
     }
@@ -111,7 +111,7 @@ public:
         bool is_writer() const;
 
     private:
-        //! The pointer to the mutex owned, or NULL if not holding a mutex.
+        //! The pointer to the mutex owned, or nullptr if not holding a mutex.
         queuing_rw_mutex* my_mutex;
 
         //! The 'pointer' to the previous and next competitors for a mutex
@@ -144,26 +144,26 @@ private:
 inline void set_name(queuing_rw_mutex& obj, const char* name) {
     itt_set_sync_name(&obj, name);
 }
-#if (_WIN32||_WIN64) && !__MINGW32__
+#if (_WIN32||_WIN64)
 inline void set_name(queuing_rw_mutex& obj, const wchar_t* name) {
     itt_set_sync_name(&obj, name);
 }
 #endif //WIN
 #else
 inline void set_name(queuing_rw_mutex&, const char*) {}
-#if (_WIN32||_WIN64) && !__MINGW32__
+#if (_WIN32||_WIN64)
 inline void set_name(queuing_rw_mutex&, const wchar_t*) {}
 #endif //WIN
 #endif
 } // namespace d1
 
 namespace r1 {
-void acquire(d1::queuing_rw_mutex&, d1::queuing_rw_mutex::scoped_lock&, bool);
-bool try_acquire(d1::queuing_rw_mutex&, d1::queuing_rw_mutex::scoped_lock&, bool);
-void release(d1::queuing_rw_mutex::scoped_lock&);
-bool upgrade_to_writer(d1::queuing_rw_mutex::scoped_lock&);
-bool downgrade_to_reader(d1::queuing_rw_mutex::scoped_lock&);
-bool is_writer(const d1::queuing_rw_mutex::scoped_lock&);
+TBB_EXPORT void acquire(d1::queuing_rw_mutex&, d1::queuing_rw_mutex::scoped_lock&, bool);
+TBB_EXPORT bool try_acquire(d1::queuing_rw_mutex&, d1::queuing_rw_mutex::scoped_lock&, bool);
+TBB_EXPORT void release(d1::queuing_rw_mutex::scoped_lock&);
+TBB_EXPORT bool upgrade_to_writer(d1::queuing_rw_mutex::scoped_lock&);
+TBB_EXPORT bool downgrade_to_reader(d1::queuing_rw_mutex::scoped_lock&);
+TBB_EXPORT bool is_writer(const d1::queuing_rw_mutex::scoped_lock&);
 } // namespace r1
 
 namespace d1 {

@@ -1,5 +1,6 @@
 /*
-    Copyright (c) 2020-2021 Intel Corporation
+    Copyright (c) 2020-2025 Intel Corporation
+    Copyright (c) 2025 UXL Foundation Contributors
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -29,6 +30,7 @@
 #include "mailbox.h"
 #include "itt_notify.h"
 #include "concurrent_monitor.h"
+#include "threading_control.h"
 
 #include <atomic>
 
@@ -53,9 +55,6 @@ inline d1::task* get_self_recall_task(arena_slot& slot) {
     return t;
 }
 
-// Defined in exception.cpp
-/*[[noreturn]]*/void do_throw_noexcept(void (*throw_exception)()) noexcept;
-
 //------------------------------------------------------------------------
 // Suspend point
 //------------------------------------------------------------------------
@@ -65,25 +64,25 @@ inline d1::task* suspend_point_type::resume_task::execute(d1::execution_data& ed
     execution_data_ext& ed_ext = static_cast<execution_data_ext&>(ed);
 
     if (ed_ext.wait_ctx) {
-        market_concurrent_monitor::resume_context monitor_node{{std::uintptr_t(ed_ext.wait_ctx), nullptr}, ed_ext, m_target};
+        thread_control_monitor::resume_context monitor_node{{std::uintptr_t(ed_ext.wait_ctx), nullptr}, ed_ext, m_target};
         // The wait_ctx is present only in external_waiter. In that case we leave the current stack
         // in the abandoned state to resume when waiting completes.
         thread_data* td = ed_ext.task_disp->m_thread_data;
-        td->set_post_resume_action(thread_data::post_resume_action::register_waiter, &monitor_node);
+        td->set_post_resume_action(task_dispatcher::post_resume_action::register_waiter, &monitor_node);
 
-        market_concurrent_monitor& wait_list = td->my_arena->my_market->get_wait_list();
+        thread_control_monitor& wait_list = td->my_arena->get_waiting_threads_monitor();
 
         if (wait_list.wait([&] { return !ed_ext.wait_ctx->continue_execution(); }, monitor_node)) {
             return nullptr;
         }
 
         td->clear_post_resume_action();
-        td->set_post_resume_action(thread_data::post_resume_action::resume, ed_ext.task_disp->get_suspend_point());
+        r1::resume(ed_ext.task_disp->get_suspend_point());
     } else {
         // If wait_ctx is null, it can be only a worker thread on outermost level because
         // coroutine_waiter interrupts bypass loop before the resume_task execution.
-        ed_ext.task_disp->m_thread_data->set_post_resume_action(thread_data::post_resume_action::notify,
-            &ed_ext.task_disp->get_suspend_point()->m_is_owner_recalled);
+        ed_ext.task_disp->m_thread_data->set_post_resume_action(task_dispatcher::post_resume_action::notify,
+            ed_ext.task_disp->get_suspend_point());
     }
     // Do not access this task because it might be destroyed
     ed_ext.task_disp->resume(m_target);
@@ -110,16 +109,23 @@ inline suspend_point_type::suspend_point_type(arena* a, size_t stack_size, task_
 //------------------------------------------------------------------------
 // Task Dispatcher
 //------------------------------------------------------------------------
+
 inline task_dispatcher::task_dispatcher(arena* a) {
     m_execute_data_ext.context = a->my_default_ctx;
     m_execute_data_ext.task_disp = this;
 }
 
+#if !__TBB_USE_ADDRESS_SANITIZER
 inline bool task_dispatcher::can_steal() {
     __TBB_ASSERT(m_stealing_threshold != 0, nullptr);
     stack_anchor_type anchor{};
     return reinterpret_cast<std::uintptr_t>(&anchor) > m_stealing_threshold;
 }
+#else
+// ASan allocates fake stack which not necessarily monotonically grows downwards, therefore
+// we can't rely on stack overflow protection mechanism when Address Sanitizer is enabled.
+inline bool task_dispatcher::can_steal() { return true; }
+#endif
 
 inline d1::task* task_dispatcher::get_inbox_or_critical_task(
     execution_data_ext& ed, mail_inbox& inbox, isolation_type isolation, bool critical_allowed)
@@ -168,10 +174,10 @@ inline d1::task* task_dispatcher::steal_or_get_critical(
 
 template <bool ITTPossible, typename Waiter>
 d1::task* task_dispatcher::receive_or_steal_task(
-    thread_data& tls, execution_data_ext& ed, Waiter& waiter, isolation_type isolation,
-    bool fifo_allowed, bool critical_allowed)
+    thread_data& tls, execution_data_ext& ed, Waiter& waiter, context_guard_helper<ITTPossible>& ctxguard,
+    isolation_type isolation, bool fifo_allowed, bool critical_allowed)
 {
-    __TBB_ASSERT(governor::is_thread_data_set(&tls), NULL);
+    __TBB_ASSERT(governor::is_thread_data_set(&tls), nullptr);
     // Task to return
     d1::task* t = nullptr;
     // Get tls data (again)
@@ -198,6 +204,9 @@ d1::task* task_dispatcher::receive_or_steal_task(
         if (!waiter.continue_execution(slot, t)) {
             __TBB_ASSERT(t == nullptr, nullptr);
             break;
+        }
+        if( ITTPossible ) {
+            ctxguard.maybe_end_itt_task(waiter.pause_count());
         }
         // Start searching
         if (t != nullptr) {
@@ -231,6 +240,7 @@ d1::task* task_dispatcher::receive_or_steal_task(
         waiter.pause(slot);
     } // end of nonlocal task retrieval loop
 
+    __TBB_ASSERT(is_alive(a.my_guard), nullptr);
     if (inbox.is_idle_state(true)) {
         inbox.set_is_idle(false);
     }
@@ -247,15 +257,23 @@ d1::task* task_dispatcher::local_wait_for_all(d1::task* t, Waiter& waiter ) {
         task_dispatcher& task_disp;
         execution_data_ext old_execute_data_ext;
         properties old_properties;
+        d1::task* old_innermost_running_task;
+        bool is_initially_registered;
 
         ~dispatch_loop_guard() {
             task_disp.m_execute_data_ext = old_execute_data_ext;
             task_disp.m_properties = old_properties;
+            task_disp.m_innermost_running_task = old_innermost_running_task;
+
+            if (!is_initially_registered) {
+                task_disp.m_thread_data->my_arena->my_tc_client.get_pm_client()->unregister_thread();
+                task_disp.m_thread_data->my_is_registered = false;
+            }
 
             __TBB_ASSERT(task_disp.m_thread_data && governor::is_thread_data_set(task_disp.m_thread_data), nullptr);
             __TBB_ASSERT(task_disp.m_thread_data->my_task_dispatcher == &task_disp, nullptr);
         }
-    } dl_guard{ *this, m_execute_data_ext, m_properties };
+    } dl_guard{ *this, m_execute_data_ext, m_properties, m_innermost_running_task, m_thread_data->my_is_registered };
 
     // The context guard to track fp setting and itt tasks.
     context_guard_helper</*report_tasks=*/ITTPossible> context_guard;
@@ -280,6 +298,11 @@ d1::task* task_dispatcher::local_wait_for_all(d1::task* t, Waiter& waiter ) {
     m_properties.outermost = false;
     m_properties.fifo_tasks_allowed = false;
 
+    if (!dl_guard.is_initially_registered) {
+        m_thread_data->my_arena->my_tc_client.get_pm_client()->register_thread();
+        m_thread_data->my_is_registered = true;
+    }
+
     t = get_critical_task(t, ed, isolation, critical_allowed);
     if (t && m_thread_data->my_inbox.is_idle_state(true)) {
         // The thread has a work to do. Therefore, marking its inbox as not idle so that
@@ -289,7 +312,9 @@ d1::task* task_dispatcher::local_wait_for_all(d1::task* t, Waiter& waiter ) {
 
     // Infinite exception loop
     for (;;) {
+#if TBB_USE_EXCEPTIONS
         try {
+#endif
             // Main execution loop
             do {
                 // We assume that bypass tasks are from the same task group.
@@ -299,8 +324,8 @@ d1::task* task_dispatcher::local_wait_for_all(d1::task* t, Waiter& waiter ) {
                 while (t != nullptr) {
                     assert_task_valid(t);
                     assert_pointer_valid</*alignment = */alignof(void*)>(ed.context);
-                    __TBB_ASSERT(ed.context->my_lifetime_state > d1::task_group_context::lifetime_state::locked &&
-                                 ed.context->my_lifetime_state < d1::task_group_context::lifetime_state::dying, nullptr);
+                    __TBB_ASSERT(ed.context->my_state == d1::task_group_context::state::bound ||
+                        ed.context->my_state == d1::task_group_context::state::isolated, nullptr);
                     __TBB_ASSERT(m_thread_data->my_inbox.is_idle_state(false), nullptr);
                     __TBB_ASSERT(task_accessor::is_resume_task(*t) || isolation == no_isolation || isolation == ed.isolation, nullptr);
                     // Check premature leave
@@ -312,6 +337,9 @@ d1::task* task_dispatcher::local_wait_for_all(d1::task* t, Waiter& waiter ) {
                     // Copy itt_caller to a stack because the context might be destroyed after t->execute.
                     void* itt_caller = ed.context->my_itt_caller;
                     suppress_unused_warning(itt_caller);
+
+                    d1::task* prev_innermost_running_task = m_innermost_running_task;
+                    m_innermost_running_task = t;
 
                     ITT_CALLEE_ENTER(ITTPossible, t, itt_caller);
 
@@ -328,6 +356,7 @@ d1::task* task_dispatcher::local_wait_for_all(d1::task* t, Waiter& waiter ) {
                     ed.affinity_slot = d1::no_slot;
                     // Reset task owner id for bypassed task
                     ed.original_slot = m_thread_data->my_arena_index;
+                    m_innermost_running_task = prev_innermost_running_task;
                     t = get_critical_task(t, ed, isolation, critical_allowed);
                 }
                 __TBB_ASSERT(m_thread_data && governor::is_thread_data_set(m_thread_data), nullptr);
@@ -340,27 +369,35 @@ d1::task* task_dispatcher::local_wait_for_all(d1::task* t, Waiter& waiter ) {
                 }
                 // Retrieve the task from local task pool
                 if (t || (slot.is_task_pool_published() && (t = slot.get_task(ed, isolation)))) {
-                    __TBB_ASSERT(ed.original_slot == m_thread_data->my_arena_index, NULL);
+                    __TBB_ASSERT(ed.original_slot == m_thread_data->my_arena_index, nullptr);
                     ed.context = task_accessor::context(*t);
                     ed.isolation = task_accessor::isolation(*t);
                     continue;
                 }
                 // Retrieve the task from global sources
-                t = receive_or_steal_task<ITTPossible>(
-                    *m_thread_data, ed, waiter, isolation, dl_guard.old_properties.fifo_tasks_allowed,
-                    critical_allowed
+                t = receive_or_steal_task(
+                    *m_thread_data, ed, waiter, context_guard, isolation,
+                    dl_guard.old_properties.fifo_tasks_allowed, critical_allowed
                 );
             } while (t != nullptr); // main dispatch loop
             break; // Exit exception loop;
+#if TBB_USE_EXCEPTIONS
         } catch (...) {
             if (global_control::active_value(global_control::terminate_on_exception) == 1) {
-                do_throw_noexcept([] { throw; });
+                terminate_on_user_exception();
             }
-            if (ed.context->cancel_group_execution()) {
-                /* We are the first to signal cancellation, so store the exception that caused it. */
-                ed.context->my_exception = tbb_exception_ptr::allocate();
+
+            ed.context->cancel_group_execution();
+            tbb_exception_ptr* exception = ed.context->my_exception.load(std::memory_order_acquire);
+            if (!exception) {
+                auto e = tbb_exception_ptr::allocate();
+                if (!ed.context->my_exception.compare_exchange_strong(exception, e,
+                                                                      std::memory_order_acq_rel)) {
+                    e->destroy();
+                }
             }
         }
+#endif /* TBB_USE_EXCEPTIONS */
     } // Infinite exception loop
     __TBB_ASSERT(t == nullptr, nullptr);
 
@@ -379,14 +416,9 @@ inline void task_dispatcher::recall_point() {
     if (this != &m_thread_data->my_arena_slot->default_task_dispatcher()) {
         __TBB_ASSERT(m_suspend_point != nullptr, nullptr);
         __TBB_ASSERT(m_suspend_point->m_is_owner_recalled.load(std::memory_order_relaxed) == false, nullptr);
-        d1::suspend([](suspend_point_type* sp) {
-            sp->m_is_owner_recalled.store(true, std::memory_order_release);
-            auto is_related_suspend_point = [sp] (market_context context) {
-                std::uintptr_t sp_addr = std::uintptr_t(sp);
-                return sp_addr == context.my_uniq_addr;
-            };
-            sp->m_arena->my_market->get_wait_list().notify(is_related_suspend_point);
-        });
+
+        m_thread_data->set_post_resume_action(post_resume_action::notify, get_suspend_point());
+        internal_suspend();
 
         if (m_thread_data->my_inbox.is_idle_state(true)) {
             m_thread_data->my_inbox.set_is_idle(false);
@@ -395,7 +427,7 @@ inline void task_dispatcher::recall_point() {
 }
 #endif /* __TBB_RESUMABLE_TASKS */
 
-#if __TBB_PREVIEW_CRITICAL_TASKS
+#if __TBB_CRITICAL_TASKS
 inline d1::task* task_dispatcher::get_critical_task(d1::task* t, execution_data_ext& ed, isolation_type isolation, bool critical_allowed) {
     __TBB_ASSERT( critical_allowed || !m_properties.critical_task_allowed, nullptr );
 
@@ -451,7 +483,7 @@ inline d1::task* task_dispatcher::get_mailbox_task(mail_inbox& my_inbox, executi
         // We have exclusive access to the proxy, and can destroy it.
         tp->allocator.delete_object(tp, ed);
     }
-    return NULL;
+    return nullptr;
 }
 
 template <typename Waiter>
@@ -468,4 +500,3 @@ d1::task* task_dispatcher::local_wait_for_all(d1::task* t, Waiter& waiter) {
 } // namespace tbb
 
 #endif // _TBB_task_dispatcher_H
-

@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2021 Intel Corporation
+    Copyright (c) 2021-2025 Intel Corporation
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -58,7 +58,9 @@ struct BlockedRangeValue {
 
     BlockedRangeValue& operator=( const BlockedRangeValue& ) requires EnableCopyAssignment = default;
 
+    // Prospective destructors
     ~BlockedRangeValue() requires EnableDtor = default;
+    ~BlockedRangeValue() = delete;
 
     bool operator<( const BlockedRangeValue& ) const requires (EnableOperatorLess == State::correct) { return true; }
     bool operator<( Dummy ) const requires (EnableOperatorLess == State::incorrect_first_input) { return true; }
@@ -100,7 +102,9 @@ template <bool EnableCopyCtor, bool EnableSplitCtor, bool EnableDtor, State Enab
 struct Range {
     Range( Range&, tbb::split ) requires EnableSplitCtor {}
     Range( const Range& ) requires EnableCopyCtor = default;
+    // Prospective destructors
     ~Range() requires EnableDtor = default;
+    ~Range() = delete;
 
     bool empty() const requires (EnableEmpty == State::correct) { return true; }
     bool empty() requires (EnableEmpty == State::incorrect_constness) { return true; }
@@ -128,7 +132,9 @@ namespace parallel_for_body {
 template <typename Range, bool EnableCopyCtor, bool EnableDtor, State EnableFunctionCallOperator>
 struct ParallelForBody {
     ParallelForBody( const ParallelForBody& ) requires EnableCopyCtor = default;
+    // Prospective destructors
     ~ParallelForBody() requires EnableDtor = default;
+    ~ParallelForBody() = delete;
 
     void operator()( Range& ) const requires (EnableFunctionCallOperator == State::correct) {}
     void operator()( Range& ) requires (EnableFunctionCallOperator == State::incorrect_constness) {}
@@ -163,7 +169,9 @@ struct ParallelForIndex {
     ParallelForIndex(int) requires EnableIntCtor {}
     ParallelForIndex( const ParallelForIndex& ) requires EnableCopyCtor = default;
     ParallelForIndex& operator=( const ParallelForIndex& ) requires EnableCopyAssign = default;
+    // Prospective destructors
     ~ParallelForIndex() requires EnableDtor = default;
+    ~ParallelForIndex() = delete;
 
     bool operator<( const ParallelForIndex& ) const requires (EnableLess == State::correct) { return true; }
     bool operator<( const ParallelForIndex& ) requires (EnableLess == State::incorrect_constness) { return true; }
@@ -227,19 +235,46 @@ template <typename T, typename F = T> using WithFeederOperatorRoundBracketsNonCo
 template <typename T, typename F = T> using WithFeederWrongFirstInputOperatorRoundBrackets = ParallelForEachFeederBody<T, F, /*() = */State::incorrect_first_input>;
 template <typename T, typename F = T> using WithFeederWrongSecondInputOperatorRoundBrackets = ParallelForEachFeederBody<T, F, /*() = */State::incorrect_second_input>;
 } // namespace parallel_for_each_body
+namespace parallel_sort_value {
+template<bool MovableV, bool MoveAssignableV, bool ComparableV>
+struct ParallelSortValue
+{
+    ParallelSortValue(ParallelSortValue&&) requires MovableV = default;
+    ParallelSortValue& operator=(ParallelSortValue&&) requires MoveAssignableV = default;
+
+    friend bool operator<(const ParallelSortValue&, const ParallelSortValue&) requires ComparableV { return true; }
+};
+
+using CorrectValue = ParallelSortValue</*MovableV = */true, /*MoveAssignableV = */true, /*ComparableV = */true>;
+using NonMovableValue = ParallelSortValue</*MovableV = */false, /*MoveAssignableV = */true, /*ComparableV = */true>;
+using NonMoveAssignableValue = ParallelSortValue</*MovableV = */true, /*MoveAssignableV = */false, /*ComparableV = */true>;
+using NonComparableValue = ParallelSortValue</*MovableV = */true, /*MoveAssignableV = */true, /*ComparableV = */false>;
+} // namespace parallel_sort_value
+template <typename T>
+class ConstantIT {
+    T data{};
+    const T& operator* () const { return data; }
+};
 namespace container_based_sequence {
 
-using iterator = int*;
-
-template <bool EnableBegin, bool EnableEnd>
+template <bool EnableBegin, bool EnableEnd, typename T = int>
 struct ContainerBasedSequence {
-    int* begin() requires EnableBegin { return nullptr; }
-    int* end() requires EnableEnd { return nullptr; }
+    using iterator = T*;
+    T* begin() requires EnableBegin { return nullptr; }
+    T* end() requires EnableEnd { return nullptr; }
 };
 
 using Correct = ContainerBasedSequence</*Begin = */true, /*End = */true>;
 using NoBegin = ContainerBasedSequence</*Begin = */false, /*End = */true>;
 using NoEnd = ContainerBasedSequence</*Begin = */true, /*End = */false>;
+
+template <typename T>
+using CustomValueCBS = ContainerBasedSequence</*Begin = */true, /*End = */true, T>;
+
+struct ConstantCBS {
+    ConstantIT<int> begin() const { return ConstantIT<int>{}; }
+    ConstantIT<int> end() const { return ConstantIT<int>{}; }
+};
 
 struct ForwardIteratorCBS {
     utils::ForwardIterator<int> begin() { return utils::ForwardIterator<int>{}; }
@@ -252,7 +287,9 @@ namespace parallel_reduce_body {
 template <typename Range, bool EnableSplitCtor, bool EnableDtor, State EnableFunctionCallOperator, State EnableJoin>
 struct ParallelReduceBody {
     ParallelReduceBody( ParallelReduceBody&, tbb::split ) requires EnableSplitCtor {}
+    // Prospective destructors
     ~ParallelReduceBody() requires EnableDtor = default;
+    ~ParallelReduceBody() = delete;
 
     void operator()( const Range& ) requires (EnableFunctionCallOperator == State::correct) {}
     void operator()( Dummy ) requires (EnableFunctionCallOperator == State::incorrect_first_input) {}
@@ -348,7 +385,7 @@ struct ParallelScanFunction {
     T operator()( Dummy, const T& a, bool ) const requires (EnableFunctionCallOperator == State::incorrect_first_input) { return a; }
     T operator()( const Range&, Dummy, bool ) const requires (EnableFunctionCallOperator == State::incorrect_second_input) { return T{}; }
     T operator()( const Range&, const T& a, Dummy ) const requires (EnableFunctionCallOperator == State::incorrect_third_input) { return a; }
-    Dummy operator()( const Range&, const T& a, bool ) const requires (EnableFunctionCallOperator == State::incorrect_return_type) { return Dummy{}; }
+    Dummy operator()( const Range&, const T&, bool ) const requires (EnableFunctionCallOperator == State::incorrect_return_type) { return Dummy{}; }
 };
 
 template <typename R, typename T> using Correct = ParallelScanFunction<R, T, /*() = */State::correct>;
@@ -384,7 +421,9 @@ namespace hash_compare {
 template <typename Key, bool EnableCopyCtor, bool EnableDtor, State EnableHash, State EnableEqual>
 struct HashCompare {
     HashCompare( const HashCompare& ) requires EnableCopyCtor = default;
+    // Prospective destructors
     ~HashCompare() requires EnableDtor = default;
+    ~HashCompare() = delete;
 
     std::size_t hash( const Key& ) const requires (EnableHash == State::correct) { return 0; }
     std::size_t hash( const Key& ) requires (EnableHash == State::incorrect_constness) { return 0; }
@@ -419,7 +458,9 @@ struct DefineRWScopedLock {
     struct scoped_lock {
         scoped_lock() requires EnableSLDefaultCtor = default;
         scoped_lock( RwMutex&, bool = true ) requires EnableSLMutexCtor {}
+        // Prospective destructors
         ~scoped_lock() requires EnableSLDtor = default;
+        ~scoped_lock() = delete;
 
         void acquire( RwMutex&, bool = true ) requires (EnableSLAcquire == State::correct) {}
         void acquire( Dummy, bool = true ) requires (EnableSLAcquire == State::incorrect_first_input) {}
@@ -509,7 +550,9 @@ namespace input_node_body {
 template <typename Output, bool EnableCopyCtor, bool EnableDtor, State EnableFunctionCallOperator>
 struct InputNodeBody {
     InputNodeBody( const InputNodeBody& ) requires EnableCopyCtor = default;
+    // Prospective destructors
     ~InputNodeBody() requires EnableDtor = default;
+    ~InputNodeBody() = delete;
 
     Output operator()( tbb::flow_control& ) requires (EnableFunctionCallOperator == State::correct) { return Output{}; }
     Output operator()( Dummy ) requires (EnableFunctionCallOperator == State::incorrect_first_input) { return Output{}; }
@@ -528,7 +571,9 @@ namespace function_node_body {
 template <typename Input, typename Output, bool EnableCopyCtor, bool EnableDtor, State EnableFunctionCallOperator>
 struct FunctionNodeBody {
     FunctionNodeBody( const FunctionNodeBody& ) requires EnableCopyCtor = default;
+    // Prospective destructors
     ~FunctionNodeBody() requires EnableDtor = default;
+    ~FunctionNodeBody() = delete;
 
     Output operator()( const Input& ) requires (EnableFunctionCallOperator == State::correct) { return Output{}; }
     Output operator()( Dummy ) requires (EnableFunctionCallOperator == State::incorrect_first_input) { return Dummy{}; }
@@ -547,7 +592,9 @@ namespace mf_async_node_body {
 template <typename Input, typename Output, typename PortsType, bool EnableCopyCtor, bool EnableDtor, State EnableFunctionCallOperator>
 struct PortsNodeBody {
     PortsNodeBody( const PortsNodeBody& ) requires EnableCopyCtor = default;
+    // Prospective destructors
     ~PortsNodeBody() requires EnableDtor = default;
+    ~PortsNodeBody() = delete;
 
     void operator()( const Input&, PortsType& ) requires (EnableFunctionCallOperator == State::correct) {}
     void operator()( Dummy, PortsType& ) requires (EnableFunctionCallOperator == State::incorrect_first_input) {}
@@ -588,7 +635,9 @@ namespace continue_node_body {
 template <typename Output, bool EnableCopyCtor, bool EnableDtor, State EnableFunctionCallOperator>
 struct ContinueNodeBody {
     ContinueNodeBody( const ContinueNodeBody& ) requires EnableCopyCtor = default;
+    // Prospective destructors
     ~ContinueNodeBody() requires EnableDtor = default;
+    ~ContinueNodeBody() = delete;
 
     Output operator()( tbb::flow::continue_msg ) requires (EnableFunctionCallOperator == State::correct) { return Output{}; }
     Output operator()( Dummy ) requires (EnableFunctionCallOperator == State::incorrect_first_input) { return Output{}; }
@@ -607,7 +656,9 @@ namespace sequencer {
 template <typename T, bool EnableCopyCtor, bool EnableDtor, State EnableFunctionCallOperator>
 struct Sequencer {
     Sequencer( const Sequencer& ) requires EnableCopyCtor = default;
+    // Prospective destructors
     ~Sequencer() requires EnableDtor = default;
+    ~Sequencer() = delete;
 
     std::size_t operator()( const T& ) requires (EnableFunctionCallOperator == State::correct) { return 0; }
     std::size_t operator()( Dummy ) requires (EnableFunctionCallOperator == State::incorrect_first_input) { return 0; }
@@ -626,7 +677,9 @@ namespace join_node_function_object {
 template <typename Input, typename Key, bool EnableCopyCtor, bool EnableDtor, State EnableFunctionCallOperator>
 struct JoinNodeFunctionObject {
     JoinNodeFunctionObject( const JoinNodeFunctionObject& ) requires EnableCopyCtor = default;
+    // Prospective destructors
     ~JoinNodeFunctionObject() requires EnableDtor = default;
+    ~JoinNodeFunctionObject() = delete;
 
     Key operator()( const Input& ) requires (EnableFunctionCallOperator == State::correct) { return Key{}; }
     Key operator()( Dummy ) requires (EnableFunctionCallOperator == State::incorrect_first_input) { return Key{}; }
@@ -643,7 +696,7 @@ template <typename I, typename K> using WrongReturnOperatorRoundBrackets = JoinN
 } // namespace join_node_function_object
 
 template <typename T>
-concept container_range = tbb::detail::range<T> &&
+concept container_range = tbb::detail::tbb_range<T> &&
                           std::input_iterator<typename T::iterator> &&
                           requires(T& range) {
                               typename T::value_type;

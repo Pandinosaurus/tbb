@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2025 Intel Corporation
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -21,8 +21,8 @@
 #include "_utils.h"
 #if __TBB_CPP20_CONCEPTS_PRESENT
 #include <concepts>
-#include <iterator>
 #endif
+#include <iterator>
 
 namespace tbb {
 namespace detail {
@@ -73,10 +73,10 @@ auto get_range_split_object( PartitionerSplitType& split_obj )
     return range_split_object_provider<Range>::get(split_obj);
 }
 
-#if __TBB_CPP20_CONCEPTS_PRESENT
 template <typename Range>
 using range_iterator_type = decltype(std::begin(std::declval<Range&>()));
 
+#if __TBB_CPP20_CONCEPTS_PRESENT
 template <typename Iterator>
 using iterator_reference_type = typename std::iterator_traits<Iterator>::reference;
 
@@ -95,27 +95,30 @@ template <typename T>
 concept splittable = std::constructible_from<T, T&, tbb::detail::split>;
 
 template <typename Range>
-concept range = std::copy_constructible<Range> &&
-                splittable<Range> &&
-                requires( const std::remove_reference_t<Range>& range ) {
-                    { range.empty() } -> relaxed_convertible_to<bool>;
-                    { range.is_divisible() } -> relaxed_convertible_to<bool>;
-                };
-
-template <typename Iterator>
-constexpr bool iterator_concept_helper( std::input_iterator_tag ) {
-    return std::input_iterator<Iterator>;
-}
-
-template <typename Iterator>
-constexpr bool iterator_concept_helper( std::random_access_iterator_tag ) {
-    return std::random_access_iterator<Iterator>;
-}
+concept tbb_range = std::copy_constructible<Range> &&
+                    splittable<Range> &&
+                    requires( const std::remove_reference_t<Range>& range ) {
+                        { range.empty() } -> relaxed_convertible_to<bool>;
+                        { range.is_divisible() } -> relaxed_convertible_to<bool>;
+                    };
 
 template <typename Iterator, typename IteratorTag>
-concept iterator_satisfies = requires (IteratorTag tag) {
-    requires iterator_concept_helper<Iterator>(tag);
+struct iterator_concept_helper;
+
+// New specializations should be added in case of using container_based_sequence with
+// the new iterator tag types
+template <typename Iterator>
+struct iterator_concept_helper<Iterator, std::input_iterator_tag> {
+    static constexpr bool value = std::input_iterator<Iterator>;
 };
+
+template <typename Iterator>
+struct iterator_concept_helper<Iterator, std::random_access_iterator_tag> {
+    static constexpr bool value = std::random_access_iterator<Iterator>;
+};
+
+template <typename Iterator, typename IteratorTag>
+concept iterator_satisfies = iterator_concept_helper<Iterator, IteratorTag>::value;
 
 template <typename Sequence, typename IteratorTag>
 concept container_based_sequence = requires( Sequence& seq ) {

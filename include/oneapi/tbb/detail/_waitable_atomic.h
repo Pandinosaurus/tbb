@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2021 Intel Corporation
+    Copyright (c) 2021-2023 Intel Corporation
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -23,10 +23,10 @@ namespace tbb {
 namespace detail {
 
 namespace r1 {
-void __TBB_EXPORTED_FUNC wait_on_address(void* address, d1::delegate_base& wakeup_condition, std::uintptr_t context);
-void __TBB_EXPORTED_FUNC notify_by_address(void* address, std::uintptr_t context);
-void __TBB_EXPORTED_FUNC notify_by_address_one(void* address);
-void __TBB_EXPORTED_FUNC notify_by_address_all(void* address);
+TBB_EXPORT void __TBB_EXPORTED_FUNC wait_on_address(void* address, d1::delegate_base& wakeup_condition, std::uintptr_t context);
+TBB_EXPORT void __TBB_EXPORTED_FUNC notify_by_address(void* address, std::uintptr_t context);
+TBB_EXPORT void __TBB_EXPORTED_FUNC notify_by_address_one(void* address);
+TBB_EXPORT void __TBB_EXPORTED_FUNC notify_by_address_all(void* address);
 } // namespace r1
 
 namespace d1 {
@@ -53,10 +53,6 @@ public:
         return my_atomic.load(order);
     }
 
-    void store(T desired, std::memory_order order) noexcept {
-        return my_atomic.store(desired, order);
-    }
-
     T exchange(T desired) noexcept {
         return my_atomic.exchange(desired);
     }
@@ -73,29 +69,15 @@ public:
         }
     }
 
-    void wait_until(T expected, std::uintptr_t context, std::memory_order order) {
-        auto wakeup_condition = [&] { return my_atomic.load(order) == expected; };
-        if (!timed_spin_wait_until(wakeup_condition)) {
-            // We need to use while here, because notify_all() will wake up all threads
-            // But predicate for them might be false
-            d1::delegated_function<decltype(wakeup_condition)> pred(wakeup_condition);
-            do {
-                r1::wait_on_address(this, pred, context);
-            } while (!wakeup_condition());
-        }
-    }
-
-    void notify_relaxed(std::uintptr_t context) {
-        r1::notify_by_address(this, context);
-    }
-
     void notify_one_relaxed() {
         r1::notify_by_address_one(this);
     }
 
-    void notify_all_relaxed() {
-        r1::notify_by_address_all(this);
-    }
+    // TODO: consider adding following interfaces:
+    // store(desired, memory_order)
+    // notify_all_relaxed()
+    // wait_until(T, std::uintptr_t, std::memory_order)
+    // notify_relaxed(std::uintptr_t context)
 
 private:
     std::atomic<T> my_atomic{};

@@ -1,5 +1,6 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2024 Intel Corporation
+    Copyright (c) 2026 UXL Foundation Contributors
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -18,6 +19,7 @@
 #include "common/spin_barrier.h"
 #include "common/utils.h"
 #include "common/utils_concurrency_limit.h"
+#include "common/cpu_usertime.h"
 
 #include "oneapi/tbb/global_control.h"
 #include "oneapi/tbb/parallel_for.h"
@@ -64,12 +66,14 @@ void TestStackSizeThreadsControl() {
     utils::NativeParallelFor( threads, StackSizeRun(threads, &barr1, &barr2) );
 }
 
-void RunWorkersLimited(size_t parallelism, bool wait)
+void RunWorkersLimited(size_t parallelism)
 {
     oneapi::tbb::global_control s(oneapi::tbb::global_control::max_allowed_parallelism, parallelism);
-    // try both configuration with already sleeping workers and with not yet sleeping
-    if (wait)
-        utils::Sleep(10);
+    // TODO: consider better testing approach
+    // Sleep is required because after destruction global_control on the previous iteration,
+    // it recalls the maximum concurrency and excessive worker threads might populate the arena.
+    // So, we need to wait when arena becomes empty but it is unreliable and might sporadically fail.
+    utils::Sleep(100);
     const std::size_t expected_threads = (utils::get_platform_max_threads()==1)? 1 : parallelism;
     utils::ExactConcurrencyLevel::check(expected_threads);
 }
@@ -90,12 +94,10 @@ void TestWorkersConstraints()
     }
     const size_t limit_par = utils::min(max_parallelism, 4U);
     // check that constrains are really met
-    for (int wait=0; wait<2; wait++) {
-        for (size_t num=2; num<limit_par; num++)
-            RunWorkersLimited(num, wait==1);
-        for (size_t num=limit_par; num>1; num--)
-            RunWorkersLimited(num, wait==1);
-    }
+    for (size_t num=2; num<limit_par; num++)
+        RunWorkersLimited(num);
+    for (size_t num=limit_par; num>1; num--)
+        RunWorkersLimited(num);
 }
 
 struct SetUseRun: utils::NoAssign {
@@ -136,6 +138,10 @@ void TestAutoInit()
     if (max_parallelism > 2) {
         // after autoinit it's possible to decrease workers number
         oneapi::tbb::global_control s(oneapi::tbb::global_control::max_allowed_parallelism, max_parallelism-1);
+        // TODO: consider better testing approach
+        // Sleep is required because after previous concurrency check, the arena is still populated with workers.
+        // So, we need to wait when arena becomes empty but it is unreliable and might sporadically fail.
+        utils::Sleep(100);
         utils::ExactConcurrencyLevel::check(max_parallelism-1);
     }
 }
@@ -201,7 +207,16 @@ TEST_CASE("setting stack size") {
 //! \brief \ref interface \ref requirement
 TEST_CASE("setting max number of threads") {
     TestWorkersConstraints();
+}
+//! Testing concurrenct setting concurrency
+//! \brief \ref interface \ref requirement
+TEST_CASE("concurrenct setting concurrency") {
     TestConcurrentSetUseConcurrency();
+}
+
+//! Testing auto initialization
+//! \brief \ref interface \ref requirement
+TEST_CASE("auto initialization") {
     TestAutoInit();
 }
 
@@ -230,66 +245,6 @@ TEST_CASE("terminate_on_exception: nested") {
     delete c0;
 }
 
-// The test cannot work correctly with statically linked runtime.
-// TODO: investigate a failure in debug with MSVC
-#if !_MSC_VER || (defined(_DLL) && !defined(_DEBUG))
-#include <csetjmp>
-
-// Overall, the test case is not safe because the dtors might not be called during long jump.
-// Therefore, it makes sense to run the test case after all other test cases.
-//! Test terminate_on_exception behavior
-//! \brief \ref interface \ref requirement
-TEST_CASE("terminate_on_exception: enabled") {
-    oneapi::tbb::global_control c(oneapi::tbb::global_control::terminate_on_exception, 1);
-    static bool terminate_handler_called;
-    terminate_handler_called = false;
-
-#if TBB_USE_EXCEPTIONS
-    try {
-#endif
-        static std::jmp_buf buffer;
-        std::terminate_handler prev = std::set_terminate([] {
-            CHECK(!terminate_handler_called);
-            terminate_handler_called = true;
-            std::longjmp(buffer, 1);
-        });
-#if _MSC_VER
-#pragma warning(push)
-#pragma warning(disable:4611) // interaction between '_setjmp' and C++ object destruction is non - portable
-#endif
-        SUBCASE("internal exception") {
-            if (setjmp(buffer) == 0) {
-                oneapi::tbb::parallel_for(0, 1, -1, [](int) {});
-                FAIL("Unreachable code");
-            }
-        }
-#if TBB_USE_EXCEPTIONS
-        SUBCASE("user exception") {
-            if (setjmp(buffer) == 0) {
-                oneapi::tbb::parallel_for(0, 1, [](int) {
-                    volatile bool suppress_unreachable_code_warning = true;
-                    if (suppress_unreachable_code_warning) {
-                        throw std::exception();
-                    }
-                });
-                FAIL("Unreachable code");
-            }
-        }
-#endif
-#if _MSC_VER
-#pragma warning(pop)
-#endif
-        std::set_terminate(prev);
-        terminate_handler_called = true;
-#if TBB_USE_EXCEPTIONS
-    } catch (...) {
-        FAIL("The exception is not expected");
-    }
-#endif
-    CHECK(terminate_handler_called);
-}
-#endif
-
 //! Testing setting the same value but different objects
 //! \brief \ref interface \ref error_guessing
 TEST_CASE("setting same value") {
@@ -306,3 +261,134 @@ TEST_CASE("setting same value") {
     REQUIRE_MESSAGE(active == value, "Active value should not change, because of value duplication");
     delete ctl1;
 }
+
+//! Testing lifetime control conformance
+//! \brief \ref interface \ref requirement
+TEST_CASE("prolong lifetime simple") {
+    tbb::task_scheduler_handle hdl1{ tbb::attach{} };
+    {
+        tbb::parallel_for(0, 10, utils::DummyBody());
+
+        tbb::task_scheduler_handle hdl2;
+        hdl2 = tbb::task_scheduler_handle{ tbb::attach{} };
+        hdl2.release();
+    }
+    bool ok = tbb::finalize(hdl1, std::nothrow);
+    REQUIRE(ok);
+}
+
+//! Testing handle check for emptiness
+//! \brief \ref interface \ref requirement
+TEST_CASE("null handle check") {
+    tbb::task_scheduler_handle hndl;
+    REQUIRE_FALSE(hndl);
+}
+
+//! Testing handle check for emptiness
+//! \brief \ref interface \ref requirement
+TEST_CASE("null handle check 2") {
+    tbb::task_scheduler_handle hndl{ tbb::attach{} };
+    bool not_empty = (bool)hndl;
+
+    tbb::finalize(hndl, std::nothrow);
+
+    REQUIRE(not_empty);
+    REQUIRE_FALSE(hndl);
+}
+
+//! Testing handle check for emptiness
+//! \brief \ref interface \ref requirement
+TEST_CASE("null handle check 3") {
+    tbb::task_scheduler_handle handle1{ tbb::attach{} };
+    tbb::task_scheduler_handle handle2(std::move(handle1));
+
+    bool handle1_empty = !handle1;
+    bool handle2_not_empty = (bool)handle2;
+
+    tbb::finalize(handle2, std::nothrow);
+
+    REQUIRE(handle1_empty);
+    REQUIRE(handle2_not_empty);
+}
+
+//! Testing  task_scheduler_handle is created on one thread and destroyed on another.
+//! \brief \ref interface \ref requirement
+TEST_CASE("cross thread 1") {
+    // created task_scheduler_handle, parallel_for on another thread - finalize
+    tbb::task_scheduler_handle handle{ tbb::attach{} };
+    utils::NativeParallelFor(1, [&](int) {
+        tbb::parallel_for(0, 10, utils::DummyBody());
+        bool res = tbb::finalize(handle, std::nothrow);
+        REQUIRE(res);
+    });
+}
+
+//! Testing  task_scheduler_handle is created on one thread and destroyed on another.
+//! \brief \ref interface \ref requirement
+TEST_CASE("cross thread 2") {
+    // created task_scheduler_handle, called parallel_for on this thread, killed the thread - and finalize on another thread
+    tbb::task_scheduler_handle handle;
+    utils::NativeParallelFor(1, [&](int) {
+        handle = tbb::task_scheduler_handle{ tbb::attach{} };
+        tbb::parallel_for(0, 10, utils::DummyBody());
+    });
+    bool res = tbb::finalize(handle, std::nothrow);
+    REQUIRE(res);
+}
+
+//! Testing multiple wait
+//! \brief \ref interface \ref requirement
+TEST_CASE("simple prolong lifetime 3") {
+    // Parallel region
+    tbb::parallel_for(0, 10, utils::DummyBody());
+    // Termination
+    tbb::task_scheduler_handle handle = tbb::task_scheduler_handle{ tbb::attach{} };
+    bool res = tbb::finalize(handle, std::nothrow);
+    REQUIRE(res);
+    // New parallel region
+    tbb::parallel_for(0, 10, utils::DummyBody());
+}
+
+//! \brief \ref regression \ref interface \ref requirement
+TEST_CASE("Test worker threads remain inactive in enforced serial execution mode") {
+    auto num_threads = utils::get_platform_max_threads();
+    utils::SpinBarrier barrier{num_threads};
+
+    // Warm-up threads
+    tbb::parallel_for(std::size_t(0), num_threads, [&] (std::size_t) {
+        barrier.wait();
+    });
+
+    tbb::global_control control(tbb::global_control::max_allowed_parallelism, 1);
+
+    std::thread thr([&] {
+        tbb::parallel_for(0, 100000, [&] (int) {
+            utils::doDummyWork(100);
+        });
+    });
+
+    // Workers should sleep because of global_control enforced serial execution of tasks
+    TestCPUUserTime(utils::get_platform_max_threads() - 1);
+
+    thr.join();
+}
+
+constexpr char test_name[] =
+    "terminate_on_exception: set_terminate";
+
+// The test cannot work correctly with statically linked runtime.
+// TODO: investigate a failure in debug with MSVC
+#if (!_MSC_VER || (defined(_DLL) && !defined(_DEBUG))) && !EMSCRIPTEN
+
+#include "terminate_on_exception.h"
+
+//! Test terminate_on_exception: std::set_terminate
+//! \brief \ref interface \ref requirement
+TEST_CASE(test_name) {
+    global_control_terminate_on_exception(TestCase::SET_TERMINATE);
+}
+#else // (!_MSC_VER || (defined(_DLL) && !defined(_DEBUG))) && !EMSCRIPTEN
+//! Test terminate_on_exception: skip in this configuration
+//! \brief \ref interface \ref requirement
+TEST_CASE(test_name * doctest::skip()) {}
+#endif

@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2025 Intel Corporation
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -37,6 +37,8 @@
 
 #if _MSC_VER
 #pragma warning (push)
+// Suppress conditional expression is constant
+#pragma warning (disable: 4127)
 #if __TBB_MSVC_UNREACHABLE_CODE_IGNORED
     // Suppress pointless "unreachable code" warning.
     #pragma warning (disable: 4702)
@@ -130,7 +132,7 @@ namespace correctness {
 /* Testing only correctness (that is parallel_for does not hang) */
 template <typename RangeType, bool /* feedback */, bool ensure_non_emptiness>
 void test() {
-    RangeType range( 0, utils::get_platform_max_threads(), NULL, false, ensure_non_emptiness );
+    RangeType range( 0, utils::get_platform_max_threads(), nullptr, false, ensure_non_emptiness );
     tbb::affinity_partitioner ap;
     tbb::parallel_for( range, SimpleBody(), ap );
 }
@@ -144,7 +146,7 @@ template <typename RangeType, bool feedback, bool ensure_non_emptiness>
 void test() {
     static const std::size_t thread_num = utils::get_platform_max_threads();
     utils::SpinBarrier sb( thread_num );
-    RangeType range(0, thread_num, NULL, feedback, ensure_non_emptiness);
+    RangeType range(0, thread_num, nullptr, feedback, ensure_non_emptiness);
     const Body sync_body( sb );
     tbb::affinity_partitioner ap;
     tbb::parallel_for( range, sync_body, ap );
@@ -443,7 +445,7 @@ TEST_CASE("Various range implementations") {
 
 //! Testing parallel_for with explicit task_group_context
 //! \brief \ref interface \ref error_guessing
-TEST_CASE("Сancellation test for tbb::parallel_for") {
+TEST_CASE("Cancellation test for tbb::parallel_for") {
     test_cancellation::ParallelForTestRunner</*FirstMode = */0>::run();
 }
 

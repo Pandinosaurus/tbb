@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2024 Intel Corporation
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -32,8 +32,14 @@ namespace d1 {
 class base_filter;
 }
 
+namespace d2 {
+template <typename Output>
+__TBB_requires(std::copyable<Output>)
+class input_node;
+}
+
 namespace r1 {
-void __TBB_EXPORTED_FUNC set_end_of_input(d1::base_filter&);
+TBB_EXPORT void __TBB_EXPORTED_FUNC set_end_of_input(d1::base_filter&);
 class pipeline;
 class stage_task;
 class input_buffer;
@@ -131,7 +137,7 @@ class flow_control {
     template<typename Body, typename InputType, typename OutputType > friend class concrete_filter;
     template<typename Output>
     __TBB_requires(std::copyable<Output>)
-    friend class input_node;
+    friend class d2::input_node;
 public:
     void stop() { is_pipeline_stopped = true; }
 };
@@ -233,7 +239,7 @@ class concrete_filter: public base_filter {
 
     void* operator()(void* input) override {
         input_pointer temp_input = input_helper::cast_from_void_ptr(input);
-        output_pointer temp_output = output_helper::create_token(my_body(std::move(input_helper::token(temp_input))));
+        output_pointer temp_output = output_helper::create_token(tbb::detail::invoke(my_body, std::move(input_helper::token(temp_input))));
         input_helper::destroy_token(temp_input);
         return output_helper::cast_to_void_ptr(temp_output);
     }
@@ -281,7 +287,7 @@ class concrete_filter<InputType, void, Body>: public base_filter {
 
     void* operator()(void* input) override {
         input_pointer temp_input = input_helper::cast_from_void_ptr(input);
-        my_body(std::move(input_helper::token(temp_input)));
+        tbb::detail::invoke(my_body, std::move(input_helper::token(temp_input)));
         input_helper::destroy_token(temp_input);
         return nullptr;
     }
@@ -420,7 +426,7 @@ inline void filter_node_ptr::operator=(filter_node_ptr && rhs) {
 }
 
 inline filter_node& filter_node_ptr::operator*() const{
-    __TBB_ASSERT(my_node,"NULL node is used");
+    __TBB_ASSERT(my_node,"nullptr node is used");
     return *my_node;
 }
 
@@ -441,11 +447,11 @@ public:
 };
 
 
-template <typename Body, typename Input = typename body_types<decltype(&Body::operator())>::input_type>
+template <typename Body, typename Input = typename filter_body_types<decltype(&Body::operator())>::input_type>
 using filter_input = typename std::conditional<std::is_same<Input, flow_control>::value, void, Input>::type;
 
 template <typename Body>
-using filter_output = typename body_types<decltype(&Body::operator())>::output_type;
+using filter_output = typename filter_body_types<decltype(&Body::operator())>::output_type;
 
 } // namespace d1
 } // namespace detail

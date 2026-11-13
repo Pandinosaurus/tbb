@@ -1,5 +1,6 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2022 Intel Corporation
+    Copyright (c) 2026 UXL Foundation Contributors
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -14,7 +15,7 @@
     limitations under the License.
 */
 
-#if _WIN32 || _WIN64
+#if !defined(_CRT_SECURE_NO_WARNINGS) && (_WIN32 || _WIN64)
 #define _CRT_SECURE_NO_WARNINGS
 #endif
 
@@ -23,8 +24,6 @@
 #pragma warning( disable: 4324 )
 #endif
 
-#define TBB_PREVIEW_MUTEXES 1
-
 #include "common/test.h"
 #include "common/utils.h"
 #define __TBB_TEST_DEFINE_PRIVATE_PUBLIC 1
@@ -32,8 +31,6 @@
 #define private public
 #define protected public
 #include "tbb/concurrent_queue.h"
-#include "../../src/tbb/concurrent_bounded_queue.cpp"
-#include "../../src/tbb/misc.cpp"
 #undef protected
 #undef private
 
@@ -55,7 +52,8 @@ public:
         value_type elem = value_type(thread_id);
         for (std::size_t i = 0; i < elem_num; ++i) {
             q.push(elem);
-            q.try_pop(elem);
+            bool res = q.try_pop(elem);
+            CHECK_FAST(res);
         }
     }
 
@@ -81,26 +79,24 @@ void test_flogger_help( Q& q, std::size_t items_per_page ) {
     }
 
     // To induce the overflow occurrence
-    utils::NativeParallelFor(utils::MaxThread, FloggerBody<Q>(q, reserved_elem_num + 20));
+    utils::NativeParallelFor(static_cast<typename Q::value_type>(utils::MaxThread), FloggerBody<Q>(q, reserved_elem_num + 20));
 
     REQUIRE_MESSAGE(q.empty(), "Failed flogger/empty test");
     REQUIRE_MESSAGE(q.my_queue_representation->head_counter < hack_val, "Failed wraparound test");
 }
 
-template <typename T>
-void test_flogger() {
-    {
-        tbb::concurrent_queue<T> q;
-        test_flogger_help(q, q.my_queue_representation->items_per_page);
-    }
-    {
-        tbb::concurrent_bounded_queue<T> q;
+//! \brief \ref error_guessing
+TEST_CASE("Test CQ Wrapparound") {
+    for (int i = 0; i < 1000; ++i) {
+        tbb::concurrent_queue<int> q;
         test_flogger_help(q, q.my_queue_representation->items_per_page);
     }
 }
 
 //! \brief \ref error_guessing
-TEST_CASE("Test Wrapparound") {
-    test_flogger<int>();
-    // TODO: add test with unsigned char
+TEST_CASE("Test CBQ Wrapparound") {
+    for (int i = 0; i < 1000; ++i) {
+        tbb::concurrent_bounded_queue<int> q;
+        test_flogger_help(q, q.my_queue_representation->items_per_page);
+    }
 }

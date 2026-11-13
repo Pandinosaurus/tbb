@@ -1,5 +1,6 @@
 /*
-    Copyright (c) 2019-2021 Intel Corporation
+    Copyright (c) 2019-2025 Intel Corporation
+    Copyright (c) 2026 UXL Foundation Contributors
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -25,7 +26,7 @@
 
 namespace tbb {
 namespace detail {
-namespace d1 {
+namespace d3 {
 
 template<typename Key, typename KeyCompare, typename RandomGenerator, typename Allocator, bool AllowMultimapping>
 struct set_traits {
@@ -52,8 +53,8 @@ template <typename Key, typename Compare, typename Allocator>
 class concurrent_multiset;
 
 template <typename Key, typename Compare = std::less<Key>, typename Allocator = tbb::tbb_allocator<Key>>
-class concurrent_set : public concurrent_skip_list<set_traits<Key, Compare, concurrent_geometric_level_generator<32>, Allocator, false>> {
-    using base_type = concurrent_skip_list<set_traits<Key, Compare, concurrent_geometric_level_generator<32>, Allocator, false>>;
+class concurrent_set : public concurrent_skip_list<set_traits<Key, Compare, geometric_level_generator<32>, Allocator, false>> {
+    using base_type = concurrent_skip_list<set_traits<Key, Compare, geometric_level_generator<32>, Allocator, false>>;
 public:
     using key_type = Key;
     using value_type = typename base_type::value_type;
@@ -75,7 +76,6 @@ public:
 
     // Include constructors of base_type
     using base_type::base_type;
-    using base_type::operator=;
 
     // Required for implicit deduction guides
     concurrent_set() = default;
@@ -86,6 +86,11 @@ public:
     // Required to respect the rule of 5
     concurrent_set& operator=( const concurrent_set& ) = default;
     concurrent_set& operator=( concurrent_set&& ) = default;
+
+    concurrent_set& operator=( std::initializer_list<value_type> il ) {
+        base_type::operator= (il);
+        return *this;
+    }
 
     template<typename OtherCompare>
     void merge(concurrent_set<key_type, OtherCompare, Allocator>& source) {
@@ -149,8 +154,8 @@ void swap( concurrent_set<Key, Compare, Allocator>& lhs,
 }
 
 template <typename Key, typename Compare = std::less<Key>, typename Allocator = tbb::tbb_allocator<Key>>
-class concurrent_multiset : public concurrent_skip_list<set_traits<Key, Compare, concurrent_geometric_level_generator<32>, Allocator, true>> {
-    using base_type = concurrent_skip_list<set_traits<Key, Compare, concurrent_geometric_level_generator<32>, Allocator, true>>;
+class concurrent_multiset : public concurrent_skip_list<set_traits<Key, Compare, geometric_level_generator<32>, Allocator, true>> {
+    using base_type = concurrent_skip_list<set_traits<Key, Compare, geometric_level_generator<32>, Allocator, true>>;
 public:
     using key_type = Key;
     using value_type = typename base_type::value_type;
@@ -172,7 +177,6 @@ public:
 
     // Include constructors of base_type;
     using base_type::base_type;
-    using base_type::operator=;
 
     // Required for implicit deduction guides
     concurrent_multiset() = default;
@@ -183,6 +187,11 @@ public:
     // Required to respect the rule of 5
     concurrent_multiset& operator=( const concurrent_multiset& ) = default;
     concurrent_multiset& operator=( concurrent_multiset&& ) = default;
+
+    concurrent_multiset& operator=( std::initializer_list<value_type> il ) {
+        base_type::operator= (il);
+        return *this;
+    }
 
     template<typename OtherCompare>
     void merge(concurrent_set<key_type, OtherCompare, Allocator>& source) {
@@ -244,13 +253,13 @@ void swap( concurrent_multiset<Key, Compare, Allocator>& lhs,
     lhs.swap(rhs);
 }
 
-} // namespace d1
+} // namespace d3
 } // namespace detail
 
 inline namespace v1 {
 
-using detail::d1::concurrent_set;
-using detail::d1::concurrent_multiset;
+using detail::d3::concurrent_set;
+using detail::d3::concurrent_multiset;
 using detail::split;
 
 } // inline namespace v1

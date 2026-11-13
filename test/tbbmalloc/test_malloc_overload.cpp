@@ -1,5 +1,6 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2023 Intel Corporation
+    Copyright (c) 2026 UXL Foundation Contributors
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -19,7 +20,7 @@
 
 #define __TBB_NO_IMPLICIT_LINKAGE 1
 
-#if (_WIN32 || _WIN64)
+#if !defined(_CRT_SECURE_NO_WARNINGS) && (_WIN32 || _WIN64)
 #define _CRT_SECURE_NO_WARNINGS
 // As the test is intentionally build with /EHs-, suppress multiple VS2005's
 // warnings like C4530: C++ exception handler used, but unwind semantics are not enabled
@@ -32,7 +33,7 @@
 #endif
 // to use strdup w/o warnings
 #define _CRT_NONSTDC_NO_DEPRECATE 1
-#endif // _WIN32 || _WIN64
+#endif // !defined(_CRT_SECURE_NO_WARNINGS) && (_WIN32 || _WIN64)
 
 #define _ISOC11_SOURCE 1 // to get C11 declarations for GLIBC
 
@@ -44,20 +45,21 @@
 
 #include "common/test.h"
 
-#if !HARNESS_SKIP_TEST
+//ASAN overloads memory allocation functions, so no point to run this test under it.
+#if !HARNESS_SKIP_TEST && !__TBB_USE_ADDRESS_SANITIZER
 
 #if __ANDROID__
   #include <android/api-level.h> // for __ANDROID_API__
 #endif
 
-#define __TBB_POSIX_MEMALIGN_PRESENT (__linux__ && !__ANDROID__) || __APPLE__
-#define __TBB_PVALLOC_PRESENT __linux__ && !__ANDROID__
+#define __TBB_POSIX_MEMALIGN_PRESENT (__unix__ && !__ANDROID__) || __APPLE__
+#define __TBB_PVALLOC_PRESENT __unix__ && !__ANDROID__
 #if __GLIBC__
   // aligned_alloc available since GLIBC 2.16
   #define __TBB_ALIGNED_ALLOC_PRESENT __GLIBC_PREREQ(2, 16)
 #endif // __GLIBC__
  // later Android doesn't have valloc or dlmalloc_usable_size
-#define __TBB_VALLOC_PRESENT (__linux__ && __ANDROID_API__<21) || __APPLE__
+#define __TBB_VALLOC_PRESENT (__unix__ && __ANDROID_API__<21) || __APPLE__
 #define __TBB_DLMALLOC_USABLE_SIZE_PRESENT  __ANDROID__ && __ANDROID_API__<21
 
 #include "common/utils.h"
@@ -77,7 +79,7 @@
 #include <dlfcn.h>
 #endif
 
-#if __linux__
+#if __unix__
 #include <stdint.h> // for uintptr_t
 
 extern "C" {
@@ -134,14 +136,14 @@ using namespace std;
 
 class BackRefIdx { // composite index to backreference array
 private:
-    uint16_t master;      // index in BackRefMaster
+    uint16_t main;      // index in BackRefMain
     uint16_t largeObj:1;  // is this object "large"?
     uint16_t offset  :15; // offset from beginning of BackRefBlock
 public:
-    BackRefIdx() : master((uint16_t)-1) {}
-    bool isInvalid() { return master == (uint16_t)-1; }
+    BackRefIdx() : main((uint16_t)-1) {}
+    bool isInvalid() { return main == (uint16_t)-1; }
     bool isLargeObject() const { return largeObj; }
-    uint16_t getMaster() const { return master; }
+    uint16_t getMain() const { return main; }
     uint16_t getOffset() const { return offset; }
 
     // only newBackRef can modify BackRefIdx
@@ -268,7 +270,7 @@ void CheckFreeAligned() {
 
     for (int s=0; sz[s]; s++)
         for (int a=0; align[a]; a++) {
-            void *ptr = NULL;
+            void *ptr = nullptr;
 #if __TBB_POSIX_MEMALIGN_PRESENT
             int ret = posix_memalign(&ptr, align[a], sz[s]);
             REQUIRE(!ret);
@@ -301,7 +303,7 @@ void TestZoneOverload() {
     vm_address_t *zones;
     unsigned zones_num;
 
-    kern_return_t ret = malloc_get_all_zones(mach_task_self(), NULL, &zones, &zones_num);
+    kern_return_t ret = malloc_get_all_zones(mach_task_self(), nullptr, &zones, &zones_num);
     REQUIRE((!ret && zones_num>1));
     malloc_zone_t *sys_zone = (malloc_zone_t*)zones[1];
     REQUIRE_MESSAGE(strcmp("tbbmalloc", malloc_get_zone_name(sys_zone)), "zone 1 expected to be not tbbmalloc");
@@ -382,7 +384,7 @@ void FuncReplacementInfoCheck() {
     REQUIRE_MESSAGE(functions.empty(), "Changed opcodes log must contain all required functions with \"Success\" changed status");
     REQUIRE_MESSAGE(func_replacement_status == status_check, "replacement_opcodes_log() function return wrong status");
 
-    func_replacement_status = TBB_malloc_replacement_log(NULL);
+    func_replacement_status = TBB_malloc_replacement_log(nullptr);
     REQUIRE_MESSAGE(func_replacement_status == status_check, "replacement_opcodes_log() function return wrong status");
 
     // TODO: was ASSERT_WARNING
@@ -395,11 +397,11 @@ void FuncReplacementInfoCheck() {
 //! Testing tbbmalloc_proxy overload capabilities
 //! \brief \ref error_guessing
 TEST_CASE("Main set of tests") {
-#if __linux__
+#if __unix__
     REQUIRE(mallopt(0, 0)); // add dummy mallopt call for coverage
-#endif // __linux__
+#endif // __unix__
 
-    void *ptr = NULL;
+    void *ptr = nullptr;
     utils::suppress_unused_warning(ptr); // for android
 
 #if MALLOC_UNIXLIKE_OVERLOAD_ENABLED || MALLOC_ZONE_OVERLOAD_ENABLED
@@ -413,7 +415,13 @@ TEST_CASE("Main set of tests") {
    It was found that adding a new environment variable triggers the error.
 */
     REQUIRE_MESSAGE(getenv("PATH"), "We assume that PATH is set everywhere.");
-    char *pathCopy = strdup(getenv("PATH"));
+    char *pathCopy =
+#if _WIN32 || _WIN64
+        _strdup(getenv("PATH"));
+#else
+        strdup(getenv("PATH"));
+#endif
+
 #if __ANDROID__
     REQUIRE_MESSAGE(strcmp(pathCopy,getenv("PATH")) == 0, "strdup workaround does not work as expected.");
 #endif
@@ -442,13 +450,25 @@ TEST_CASE("Main set of tests") {
 #if __TBB_PVALLOC_PRESENT
     CheckPvalloc(pvalloc, free);
 #endif
-#if __linux__
+#if __unix__
     CheckMemalignFuncOverload(memalign, free);
 #if __TBB_ALIGNED_ALLOC_PRESENT
     CheckMemalignFuncOverload(aligned_alloc, free);
 #endif
 
+#if __INTEL_COMPILER
+   #pragma warning(push)
+   #pragma warning(disable: 1478)
+#elif __GNUC__
+   #pragma GCC diagnostic push
+   #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
     struct mallinfo info = mallinfo();
+#if __INTEL_COMPILER
+    #pragma warning(pop)
+#elif __GNUC__
+    #pragma GCC diagnostic pop
+#endif
     // right now mallinfo initialized by zero
     REQUIRE((!info.arena && !info.ordblks && !info.smblks && !info.hblks
            && !info.hblkhd && !info.usmblks && !info.fsmblks
@@ -463,7 +483,7 @@ TEST_CASE("Main set of tests") {
     CheckVallocFuncOverload(__libc_valloc, __libc_free);
     CheckPvalloc(__libc_pvalloc, __libc_free);
  #endif
-#endif // __linux__
+#endif // __unix__
 
 #else // MALLOC_WINDOWS_OVERLOAD_ENABLED
 
@@ -495,5 +515,22 @@ TEST_CASE("Main set of tests") {
 #endif
     TestZoneOverload();
     TestRuntimeRoutines();
+}
+
+//! Test address range tracker in backend that could be
+//! broken during remap because of incorrect order of
+//! deallocation event and the mremap system call
+//! \brief \ref regression
+TEST_CASE("Address range tracker regression test") {
+    int numThreads = 16;
+    utils::NativeParallelFor(numThreads, [](int) {
+        void *ptr = nullptr;
+        for (int i = 0; i < 1000; ++i) {
+            for (int j = 0; j < 100; ++j) {
+                ptr = realloc(ptr, 1024*1024 + 4096*j);
+            }
+        }
+        free(ptr);
+    });
 }
 #endif // !HARNESS_SKIP_TEST

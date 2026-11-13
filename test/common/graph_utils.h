@@ -1,5 +1,6 @@
 /*
-    Copyright (c) 2005-2021 Intel Corporation
+    Copyright (c) 2005-2025 Intel Corporation
+    Copyright (c) 2025 UXL Foundation Contributors
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -24,6 +25,7 @@
 #include "config.h"
 
 #include "oneapi/tbb/flow_graph.h"
+#include "oneapi/tbb/task.h"
 #include "oneapi/tbb/null_rw_mutex.h"
 #include "oneapi/tbb/concurrent_unordered_set.h"
 
@@ -34,7 +36,7 @@
 
 #include "common/spin_barrier.h"
 
-using tbb::detail::d1::SUCCESSFULLY_ENQUEUED;
+using tbb::detail::d2::SUCCESSFULLY_ENQUEUED;
 
 // Needed conversion to and from continue_msg, but didn't want to add
 // conversion operators to the class, since we don't want it in general,
@@ -276,10 +278,16 @@ struct harness_counting_receiver : public tbb::flow::receiver<T> {
         return my_graph;
     }
 
-    tbb::detail::d1::graph_task *try_put_task( const T & ) override {
+    tbb::detail::d2::graph_task *try_put_task( const T & ) override {
       ++my_count;
-      return const_cast<tbb::detail::d1::graph_task*>(SUCCESSFULLY_ENQUEUED);
+      return const_cast<tbb::detail::d2::graph_task*>(SUCCESSFULLY_ENQUEUED);
     }
+
+#if __TBB_PREVIEW_FLOW_GRAPH_TRY_PUT_AND_WAIT
+    tbb::detail::d2::graph_task *try_put_task( const T &t, const tbb::detail::d2::message_metainfo& ) override {
+      return try_put_task(t);
+    }
+#endif
 
     void validate() {
         size_t n = my_count;
@@ -300,7 +308,7 @@ struct harness_mapped_receiver : public tbb::flow::receiver<T> {
     multiset_type *my_multiset;
     tbb::flow::graph& my_graph;
 
-    harness_mapped_receiver(tbb::flow::graph& g) : my_multiset(NULL), my_graph(g) {
+    harness_mapped_receiver(tbb::flow::graph& g) : my_multiset(nullptr), my_graph(g) {
        my_count = 0;
     }
 
@@ -310,25 +318,32 @@ struct harness_mapped_receiver : public tbb::flow::receiver<T> {
     virtual
 #endif
     ~harness_mapped_receiver() {
-        if ( my_multiset ) delete my_multiset;
+        delete my_multiset;
+        my_multiset = nullptr;
     }
 
     void initialize_map( const T& m, size_t c ) {
        my_count = 0;
        max_value = m;
        num_copies = c;
-       if ( my_multiset ) delete my_multiset;
+       delete my_multiset;
        my_multiset = new multiset_type;
     }
 
-    tbb::detail::d1::graph_task* try_put_task( const T &t ) override {
+    tbb::detail::d2::graph_task* try_put_task( const T &t ) override {
       if ( my_multiset ) {
           (*my_multiset).emplace( t );
       } else {
           ++my_count;
       }
-      return const_cast<tbb::detail::d1::graph_task*>(SUCCESSFULLY_ENQUEUED);
+      return const_cast<tbb::detail::d2::graph_task*>(SUCCESSFULLY_ENQUEUED);
     }
+
+#if __TBB_PREVIEW_FLOW_GRAPH_TRY_PUT_AND_WAIT
+    tbb::detail::d2::graph_task *try_put_task( const T &t, const tbb::detail::d2::message_metainfo& ) override {
+      return try_put_task(t);
+    }
+#endif
 
     tbb::flow::graph& graph_reference() const override {
         return my_graph;
@@ -369,13 +384,13 @@ struct harness_counting_sender : public tbb::flow::sender<T> {
     size_t my_limit;
 
     harness_counting_sender( ) : my_limit(~size_t(0)) {
-       my_receiver = NULL;
+       my_receiver = nullptr;
        my_count = 0;
        my_received = 0;
     }
 
     harness_counting_sender( size_t limit ) : my_limit(limit) {
-       my_receiver = NULL;
+       my_receiver = nullptr;
        my_count = 0;
        my_received = 0;
     }
@@ -386,7 +401,7 @@ struct harness_counting_sender : public tbb::flow::sender<T> {
     }
 
     bool remove_successor( successor_type &r ) override {
-        successor_type *s = my_receiver.exchange( NULL );
+        successor_type *s = my_receiver.exchange( nullptr );
         CHECK( s == &r );
         return true;
     }
@@ -401,6 +416,12 @@ struct harness_counting_sender : public tbb::flow::sender<T> {
            return false;
         }
     }
+
+#if __TBB_PREVIEW_FLOW_GRAPH_TRY_PUT_AND_WAIT
+    bool try_get( T & v, tbb::detail::d2::message_metainfo& ) override {
+        return try_get(v);
+    }
+#endif
 
     bool try_put_once() {
         successor_type *s = my_receiver;
@@ -506,6 +527,7 @@ void test_resets() {
             // reset doesn't delete edge
 
             tbb::flow::make_edge(b0,q0);
+            g.wait_for_all(); // TODO: invesigate why make_edge to buffer_node always creates a forwarding task
             g.reset();
             for(T i = 0; i < NN; ++i) {
                 b0.try_put(i);
@@ -675,6 +697,47 @@ void test_reserving_nodes() {
     CHECK(end_receiver.my_count == 2 * N);
 }
 
+template<typename BufferNode>
+void test_nested_make_edge_single_item_buffer_to_continue_receiver() {
+    tbb::flow::graph g;
+
+    using msg_t = tbb::flow::continue_msg;
+    using cnode_t = tbb::flow::continue_node<msg_t>;
+
+    std::atomic<int> count(0);
+
+    // make a single item buffer and fill it
+    BufferNode b{g};
+    b.try_put(msg_t{});
+
+    cnode_t execute_one_time{g,
+        [&](const msg_t& m) {
+            ++count;
+            return m;
+        }};
+
+    cnode_t edge_adder{g, 
+        [&](const msg_t& m) {
+            // should increment predecessor count on execute_one_time
+            // should NOT cause execute_one_time to immediately execute
+            // since it has 2 predecessors, edge_adder and b
+            tbb::flow::make_edge(b, execute_one_time);
+            return m;
+        }};
+
+    tbb::flow::make_edge(edge_adder, execute_one_time);
+
+    // execute_one should execute
+    edge_adder.try_put(msg_t{});
+    g.wait_for_all();
+
+    // execute_one should NOT execute, it has 2 predecessors and
+    // has seen a total of 3 messages
+    execute_one_time.try_put(msg_t{});
+    g.wait_for_all();
+    CHECK_MESSAGE ((count == 1), "node should only execute once");
+}
+
 namespace lightweight_testing {
 
 typedef std::tuple<int, int> output_tuple_type;
@@ -686,7 +749,7 @@ class native_loop_body {
 public:
     native_loop_body(NodeType& node) : my_node(node) {}
 
-    void operator()(int) const {
+    void operator()(int) const noexcept {
         std::thread::id this_id = std::this_thread::get_id();
         my_node.try_put(this_id);
     }
@@ -699,9 +762,9 @@ public:
     concurrency_checker_body() { g_body_count = 0; }
 
     template<typename gateway_type>
-    void operator()(const std::thread::id& input, gateway_type&) { increase_and_check(input); }
+    void operator()(const std::thread::id& input, gateway_type&) noexcept { increase_and_check(input); }
 
-    output_tuple_type operator()(const std::thread::id& input) {
+    output_tuple_type operator()(const std::thread::id& input) noexcept {
         increase_and_check(input);
         return output_tuple_type();
     }
@@ -738,7 +801,7 @@ class native_loop_limited_body {
 public:
     native_loop_limited_body(NodeType& node, utils::SpinBarrier& barrier):
         my_node(node), my_barrier(barrier) {}
-    void operator()(int) const {
+    void operator()(int) const noexcept {
         std::thread::id this_id = std::this_thread::get_id();
         my_node.try_put(this_id);
         if(!lightweight_work_processed) {
@@ -758,6 +821,7 @@ struct condition_predicate {
 std::atomic<unsigned> g_lightweight_count;
 std::atomic<unsigned> g_task_count;
 
+template <bool NoExcept>
 class limited_lightweight_checker_body {
 public:
     limited_lightweight_checker_body() {
@@ -768,10 +832,9 @@ public:
 private:
     void increase_and_check(const std::thread::id& /*input*/) {
         ++g_body_count;
-        // TODO revamp: in order not to rely on scheduler functionality anymore add
-        // __TBB_EXTRA_DEBUG for counting the number of tasks actually created by the flow graph,
-        // hence consider moving lightweight testing into whitebox test for the flow graph.
-        bool is_inside_task = false;/*tbb::task::self().state() == tbb::task::executing;*/
+
+        bool is_inside_task = oneapi::tbb::task::current_context() != nullptr;
+
         if(is_inside_task) {
             ++g_task_count;
         } else {
@@ -783,10 +846,10 @@ private:
     }
 public:
     template<typename gateway_type>
-    void operator()(const std::thread::id& input, gateway_type&) {
+    void operator()(const std::thread::id& input, gateway_type&) noexcept(NoExcept) {
         increase_and_check(input);
     }
-    output_tuple_type operator()(const std::thread::id& input) {
+    output_tuple_type operator()(const std::thread::id& input) noexcept(NoExcept) {
         increase_and_check(input);
         return output_tuple_type();
     }
@@ -797,25 +860,102 @@ void test_limited_lightweight_execution(unsigned N, unsigned concurrency) {
     CHECK_MESSAGE(concurrency != tbb::flow::unlimited,
                   "Test for limited concurrency cannot be called with unlimited concurrency argument");
     tbb::flow::graph g;
-    NodeType node(g, concurrency, limited_lightweight_checker_body());
+    NodeType node(g, concurrency, limited_lightweight_checker_body</*NoExcept*/true>());
     // Execute first body as lightweight, then wait for all other threads to fill internal buffer.
     // Then unblock the lightweight thread and check if other body executions are inside oneTBB task.
     utils::SpinBarrier barrier(N - concurrency);
     utils::NativeParallelFor(N, native_loop_limited_body<NodeType>(node, barrier));
     g.wait_for_all();
     CHECK_MESSAGE(g_body_count == N, "Body needs to be executed N times");
-    // TODO revamp: enable the following checks once whitebox flow graph testing is ready for it.
-    // CHECK_MESSAGE(g_lightweight_count == concurrency, "Body needs to be executed as lightweight once");
-    // CHECK_MESSAGE(g_task_count == N - concurrency, "Body needs to be executed as not lightweight N - 1 times");
+    CHECK_MESSAGE(g_lightweight_count == concurrency, "Body needs to be executed as lightweight once");
+    CHECK_MESSAGE(g_task_count == N - concurrency, "Body needs to be executed as not lightweight N - 1 times");
     work_submitted = false;
     lightweight_work_processed = false;
 }
 
 template<typename NodeType>
+void test_limited_lightweight_execution_with_throwing_body(unsigned N, unsigned concurrency) {
+    CHECK_MESSAGE(concurrency != tbb::flow::unlimited,
+                  "Test for limited concurrency cannot be called with unlimited concurrency argument");
+    tbb::flow::graph g;
+    NodeType node(g, concurrency, limited_lightweight_checker_body</*NoExcept*/false>());
+    // Body is no noexcept, in this case it must be executed as tasks, instead of lightweight execution
+    utils::SpinBarrier barrier(N);
+    utils::NativeParallelFor(N, native_loop_limited_body<NodeType>(node, barrier));
+    g.wait_for_all();
+    CHECK_MESSAGE(g_body_count == N, "Body needs to be executed N times");
+    CHECK_MESSAGE(g_lightweight_count == 0, "Body needs to be executed with queueing policy");
+    CHECK_MESSAGE(g_task_count == N, "Body needs to be executed as task N times");
+    work_submitted = false;
+    lightweight_work_processed = false;
+}
+
+template <int Threshold>
+struct throwing_body{
+    std::atomic<int>& my_counter;
+
+    throwing_body(std::atomic<int>& counter) : my_counter(counter) {}
+
+    template<typename input_type, typename gateway_type>
+    void operator()(const input_type&, gateway_type&) {
+        ++my_counter;
+        if(my_counter == Threshold)
+            throw Threshold;
+    }
+
+    template<typename input_type>
+    output_tuple_type operator()(const input_type&) {
+        ++my_counter;
+        if(my_counter == Threshold)
+            throw Threshold;
+        return output_tuple_type();
+    }
+};
+
+#if TBB_USE_EXCEPTIONS
+//! Test excesption thrown in node with lightweight policy was rethrown by graph
+template<template<typename, typename, typename> class NodeType>
+void test_exception_ligthweight_policy(){
+    std::atomic<int> counter {0};
+    constexpr int threshold = 10;
+
+    using IndexerNodeType = oneapi::tbb::flow::indexer_node<int, int>;
+    using FuncNodeType = NodeType<IndexerNodeType::output_type, output_tuple_type, tbb::flow::lightweight>;
+    oneapi::tbb::flow::graph g;
+
+    IndexerNodeType indexer(g);
+    FuncNodeType tested_node(g, oneapi::tbb::flow::serial, throwing_body<threshold>(counter));
+    oneapi::tbb::flow::make_edge(indexer, tested_node);
+
+    utils::NativeParallelFor( threshold * 2, [&](int i){
+        if(i % 2)
+            std::get<1>(indexer.input_ports()).try_put(1);
+        else
+            std::get<0>(indexer.input_ports()).try_put(0);
+    });
+
+    bool catchException = false;
+    try
+    {
+        g.wait_for_all();
+    }
+    catch (const int& exc)
+    {
+        catchException = true;
+        CHECK_MESSAGE( exc == threshold, "graph.wait_for_all() rethrow current exception" );
+    }
+    CHECK_MESSAGE( catchException, "The exception must be thrown from graph.wait_for_all()" );
+    CHECK_MESSAGE( counter == threshold, "Graph must cancel all tasks after exception" );
+}
+#endif /* TBB_USE_EXCEPTIONS */
+
+template<typename NodeType>
 void test_lightweight(unsigned N) {
     test_unlimited_lightweight_execution<NodeType>(N);
     test_limited_lightweight_execution<NodeType>(N, tbb::flow::serial);
-    test_limited_lightweight_execution<NodeType>(N, (std::min)(std::thread::hardware_concurrency() / 2, N/2));
+    test_limited_lightweight_execution<NodeType>(N, (std::min)((std::thread::hardware_concurrency()+1) / 2, N/2));
+
+    test_limited_lightweight_execution_with_throwing_body<NodeType>(N, tbb::flow::serial);
 }
 
 template<template<typename, typename, typename> class NodeType>
@@ -823,8 +963,81 @@ void test(unsigned N) {
     typedef std::thread::id input_type;
     typedef NodeType<input_type, output_tuple_type, tbb::flow::queueing_lightweight> node_type;
     test_lightweight<node_type>(N);
+
+#if TBB_USE_EXCEPTIONS
+    test_exception_ligthweight_policy<NodeType>();
+#endif /* TBB_USE_EXCEPTIONS */
 }
 
 } // namespace lightweight_testing
+
+template <std::size_t N>
+struct edge_maker {
+    template <typename Sender, typename NodeType>
+    static void make(Sender& sender, NodeType& node) {
+        oneapi::tbb::flow::make_edge(sender, oneapi::tbb::flow::input_port<N - 1>(node));
+        edge_maker<N - 1>::make(sender, node);
+    }
+
+    template <typename Sender, typename NodeType>
+    static void make(std::vector<Sender>& senders, NodeType& node) {
+        oneapi::tbb::flow::make_edge(senders[N - 1], oneapi::tbb::flow::input_port<N - 1>(node));
+        edge_maker<N - 1>::make(senders, node);
+    }
+};
+
+template <>
+struct edge_maker<0> {
+    template <typename Sender, typename NodeType>
+    static void make(Sender&, NodeType&) {}
+};
+
+template <std::size_t N>
+struct assert_all_items_equal_impl {
+    template <typename TupleLike, typename Message>
+    static void compare(const TupleLike& tuple_like, const Message& message) {
+        CHECK_MESSAGE(std::get<N - 1>(tuple_like) == message, "Unexpected element");
+        assert_all_items_equal_impl<N - 1>::compare(tuple_like, message);
+    }
+};
+
+template <>
+struct assert_all_items_equal_impl<0> {
+    template <typename TupleLike, typename Message>
+    static void compare(const TupleLike&, const Message&) {}
+};
+
+template <typename TupleLike, typename Message>
+void assert_all_items_equal_to(const TupleLike& tuple_like, const Message& message) {
+    assert_all_items_equal_impl<std::tuple_size<TupleLike>::value>::compare(tuple_like, message);
+}
+
+template <typename BufferingNode, typename T>
+void spin_try_get(BufferingNode& node, T& value) {
+    std::size_t count = 0;
+
+    while (!node.try_get(value)) {
+        if (count == 1000000) {
+            // Tests that use spin_try_get first submit a set of values into the graph
+            // and then wait for outputs to arrive in buffers at the end of the graph.
+            // Because flow graph nodes spawn tasks in the graph arena and spin_try_get
+            // does not wait for graph completion, TBB does not strictly guarantee that
+            // a worker thread will wake up and execute the pending task.
+            // The workaround is to enqueue a task into the current graph arena,
+            // which is guaranteed to be executed at some point.
+
+            // This workaround assumes the calling thread is in the graph arena and all
+            // task elements are submitted to the graph before calling spin_try_get.
+
+            // Usage of oneapi::tbb::task_arena::not_initialized directly in CHECK_MESSAGE
+            // results in ODR-use and undefined reference
+            bool is_current_thread_in_arena = oneapi::tbb::this_task_arena::current_thread_index() !=
+                                              oneapi::tbb::task_arena::not_initialized;
+            CHECK_MESSAGE(is_current_thread_in_arena, "Calling thread is not in arena");
+            oneapi::tbb::this_task_arena::enqueue([] {});
+        }
+        ++count;
+    }
+}
 
 #endif  // __TBB_harness_graph_H
